@@ -32,7 +32,6 @@ const elements = {
 const configFields = [
     "p_expansions",
     "added_beds_per_expansion",
-    "dual_ub_factor",
     "time_limit_seconds",
     "fixed_hub_hospital_ids",
     "show_solver_log",
@@ -42,6 +41,7 @@ const configFields = [
 function applyDefaultConfig() {
     for (const field of configFields) {
         const element = document.getElementById(field);
+        if (!element) continue;
         const value = window.DEFAULT_CONFIG[field];
         if (element.type === "checkbox") {
             element.checked = Boolean(value);
@@ -504,6 +504,12 @@ function renderArtifacts(artifacts) {
 
 function renderMetrics(payload) {
     const comparison = payload.comparison;
+    if (!comparison) {
+        console.error("Missing comparison data in response:", payload);
+        elements.metrics.classList.add("empty-state");
+        elements.metrics.textContent = "Error: Missing comparison data in response.";
+        return;
+    }
     renderComparisonGrid(elements.metrics, [
         {
             name: "Current Assignment",
@@ -514,14 +520,14 @@ function renderMetrics(payload) {
         },
         {
             name: "Provided Hospitals",
-            hubs: comparison.provided_hubs.join(", ") || "-",
+            hubs: (comparison.provided_hubs && comparison.provided_hubs.length > 0) ? comparison.provided_hubs.join(", ") : "-",
             totalCost: comparison.provided_total_cost,
             leaderCost: comparison.provided_leader_cost,
             distanceCost: comparison.provided_travel_cost,
         },
         {
             name: "Optimal Selection",
-            hubs: comparison.optimal_hubs.join(", "),
+            hubs: comparison.optimal_hubs ? comparison.optimal_hubs.join(", ") : "Unknown",
             totalCost: comparison.optimal_total_cost,
             leaderCost: comparison.optimal_leader_cost,
             distanceCost: comparison.optimal_travel_cost,
@@ -600,7 +606,6 @@ async function buildSolvePayload() {
         config: {
             p_expansions: Number(document.getElementById("p_expansions").value),
             added_beds_per_expansion: Number(document.getElementById("added_beds_per_expansion").value),
-            dual_ub_factor: Number(document.getElementById("dual_ub_factor").value),
             time_limit_seconds: Number(document.getElementById("time_limit_seconds").value),
             fixed_hub_hospital_ids: document.getElementById("fixed_hub_hospital_ids").value
                 .split(",")
@@ -631,11 +636,19 @@ async function runScenario() {
         });
         const responsePayload = await response.json();
         if (!response.ok) {
-            throw new Error(responsePayload.detail || "Optimization failed.");
+            const errorDetail = responsePayload.detail || "Optimization failed.";
+            console.error("API Error:", errorDetail, "Response:", responsePayload);
+            throw new Error(errorDetail);
+        }
+        console.log("Solve Response:", responsePayload);
+        if (!responsePayload.comparison) {
+            console.error("Missing comparison in response:", responsePayload);
+            throw new Error("Invalid response: missing comparison data.");
         }
         renderSolveResponse(responsePayload);
         setStatus("Solved", "success");
     } catch (error) {
+        console.error("Scenario error:", error);
         showError(error.message);
         setStatus("Error", "error");
         elements.solveMeta.textContent = "Optimization failed.";

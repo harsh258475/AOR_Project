@@ -224,7 +224,6 @@ def solve_bilevel_optimization(
     )
 
     iteration_log_lines = [
-        "Branch-and-cut bilevel solve started.",
         f"Hospitals={len(hospital_ids)} Zones={len(zone_ids)} P={config.p_expansions} AddedBeds={added_beds}",
         f"Initial incumbent hubs={list(provided_hub_ids) if provided_hub_ids else '[]'}",
         "The provided hubs are evaluated first as an incumbent baseline.",
@@ -578,6 +577,30 @@ def solve_bilevel_optimization(
         "model_file_name": model_file_path.name if model_file_path is not None else None,
         "model_file_path": str(model_file_path) if model_file_path is not None else None,
     }
+    # Build comparison data before calling _build_network_payload
+    result["comparison"] = {
+        "current_hubs": [],
+        "current_total_cost": round(result["current_solution"]["total_cost"], 2),
+        "current_leader_cost": round(result["current_solution"]["leader_cost"], 2),
+        "current_travel_cost": round(result["current_solution"]["follower_cost"], 2),
+        "optimal_hubs": result["selected_hospitals"]["hospital_id"].astype(str).tolist(),
+        "optimal_total_cost": round(result["leader_cost"] + result["follower_cost"], 2),
+        "optimal_leader_cost": round(result["leader_cost"], 2),
+        "optimal_travel_cost": round(result["follower_cost"], 2),
+    }
+    if incumbent_solution is not None:
+        result["comparison"]["provided_hubs"] = incumbent_solution["selected_hospital_ids"]
+        result["comparison"]["provided_total_cost"] = round(
+            incumbent_solution["leader_cost"] + incumbent_solution["follower_cost"], 2
+        )
+        result["comparison"]["provided_leader_cost"] = round(incumbent_solution["leader_cost"], 2)
+        result["comparison"]["provided_travel_cost"] = round(incumbent_solution["follower_cost"], 2)
+    else:
+        result["comparison"]["provided_hubs"] = []
+        result["comparison"]["provided_total_cost"] = None
+        result["comparison"]["provided_leader_cost"] = None
+        result["comparison"]["provided_travel_cost"] = None
+    
     result["network"] = _build_network_payload(result, hospitals, zones)
 
     logger.info(
@@ -812,30 +835,9 @@ def serialize_result(result: dict[str, Any]) -> dict[str, Any]:
     hospital_summary["optimized_utilization"] = (
         hospital_summary["optimized_load"] / hospital_summary["optimized_capacity"]
     ).replace([np.inf, -np.inf], np.nan)
-    provided_solution = result.get("provided_solution")
-    current_solution = result["current_solution"]
-    comparison = {
-        "current_hubs": current_solution["selected_hospital_ids"],
-        "current_total_cost": round(current_solution["total_cost"], 2),
-        "current_leader_cost": round(current_solution["leader_cost"], 2),
-        "current_travel_cost": round(current_solution["follower_cost"], 2),
-        "optimal_hubs": result["selected_hospitals"]["hospital_id"].astype(str).tolist(),
-        "optimal_total_cost": round(result["leader_cost"] + result["follower_cost"], 2),
-        "optimal_leader_cost": round(result["leader_cost"], 2),
-        "optimal_travel_cost": round(result["follower_cost"], 2),
-    }
-    if provided_solution is not None:
-        comparison["provided_hubs"] = provided_solution["selected_hospital_ids"]
-        comparison["provided_total_cost"] = round(
-            provided_solution["leader_cost"] + provided_solution["follower_cost"], 2
-        )
-        comparison["provided_leader_cost"] = round(provided_solution["leader_cost"], 2)
-        comparison["provided_travel_cost"] = round(provided_solution["follower_cost"], 2)
-    else:
-        comparison["provided_hubs"] = []
-        comparison["provided_total_cost"] = None
-        comparison["provided_leader_cost"] = None
-        comparison["provided_travel_cost"] = None
+    
+    # Use comparison data already created in solve_bilevel_optimization
+    comparison = result.get("comparison", {})
 
     return {
         "status": {

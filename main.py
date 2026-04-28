@@ -171,9 +171,11 @@ def dataset_file(filename: str) -> FileResponse:
 @app.post("/api/solve")
 def solve_scenario(payload: ScenarioRequest) -> dict:
     try:
+        logger.info("Solve request received with config: %s", payload.config.model_dump())
         config = OptimizationConfig(**payload.config.model_dump())
         dataset_payload = payload.dataset.model_dump() if payload.dataset else {}
         distance, hospitals, zones = load_dataset_from_csv_text(base_dir=BASE_DIR, **dataset_payload)
+        logger.info("Dataset loaded: %d hospitals, %d zones", len(hospitals), len(zones))
         result = solve_bilevel_optimization(
             distance,
             hospitals,
@@ -183,21 +185,20 @@ def solve_scenario(payload: ScenarioRequest) -> dict:
             log_to_console=False,
             capture_solver_log=config.show_solver_log,
         )
+        logger.info("Optimization completed. Serializing result...")
         response = serialize_result(result)
+        logger.info("Result serialized successfully")
         model_file_name = response["artifacts"]["model_file_name"]
         if model_file_name:
             response["artifacts"]["model_file_url"] = f"/artifacts/{model_file_name}"
         else:
             response["artifacts"]["model_file_url"] = None
-        iteration_log_file_name = response["artifacts"].get("iteration_log_file_name")
-        if iteration_log_file_name:
-            response["artifacts"]["iteration_log_file_url"] = f"/artifacts/{iteration_log_file_name}"
-        else:
-            response["artifacts"]["iteration_log_file_url"] = None
         return response
     except ValueError as exc:
+        logger.exception("ValueError during solve")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
+        logger.exception("RuntimeError during solve")
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except gp.GurobiError as exc:
         logger.exception("Gurobi execution failed.")
