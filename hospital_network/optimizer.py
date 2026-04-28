@@ -70,9 +70,9 @@ class OptimizationConfig:
     p_expansions: int = 7
     added_beds_per_expansion: int = 1500
     dual_ub_factor: float = 2.0
-    time_limit_seconds: int = 60
+    time_limit_seconds: int = 120
     fixed_hub_hospital_ids: tuple[str, ...] = field(default_factory=tuple)
-    show_solver_log: bool = False
+    show_solver_log: bool = True
     export_model_file: bool = False
     display_interval_seconds: int = 1
 

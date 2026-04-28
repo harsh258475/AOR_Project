@@ -91,7 +91,10 @@ function autoFillIncumbentHubs() {
     if (!Number.isInteger(pValue) || pValue <= 0 || state.availableHospitalIds.length === 0) {
         return;
     }
-    const fillIds = state.availableHospitalIds.slice(0, Math.min(pValue, state.availableHospitalIds.length));
+    const hospitalCount = state.availableHospitalIds.length;
+    const selectionSize = Math.min(pValue, hospitalCount);
+    const startIndex = Math.max(0, hospitalCount - selectionSize);
+    const fillIds = state.availableHospitalIds.slice(startIndex);
     document.getElementById("fixed_hub_hospital_ids").value = fillIds.join(",");
 }
 

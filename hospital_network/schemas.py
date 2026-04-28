@@ -8,7 +8,7 @@ class OptimizationConfigPayload(BaseModel):
 
     p_expansions: int = Field(default=7, ge=1)
     added_beds_per_expansion: int = Field(default=1500, ge=1)
-    time_limit_seconds: int = Field(default=300, ge=1)
+    time_limit_seconds: int = Field(default=120, ge=1)
     fixed_hub_hospital_ids: list[str] = Field(default_factory=list)
     show_solver_log: bool = True
     export_model_file: bool = False
