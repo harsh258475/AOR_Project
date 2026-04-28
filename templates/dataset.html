@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <header class="topbar">
+        <div>
+            <h1>Dataset Library</h1>
+            <p class="subtitle">Preview and download the CSV files used by the Delhi NCR hospital network optimization case.</p>
+        </div>
+        <div class="topbar-actions">
+            <a href="/" rel="noreferrer">Main App</a>
+        </div>
+    </header>
+
+    <main class="reader-shell">
+        <section class="panel reader-panel">
+            <div class="section-header">
+                <h2>Dataset Viewer</h2>
+            </div>
+            <div class="dataset-stack">
+                {% for preview in previews %}
+                <div class="dataset-block">
+                    <div class="section-header">
+                        <div>
+                            <h3>{{ preview.filename }}</h3>
+                            <p class="muted">{{ preview.row_count }} rows | {{ preview.column_count }} columns</p>
+                        </div>
+                        <a class="artifact-link" href="{{ preview.download_url }}">Download</a>
+                    </div>
+                    <div class="table-shell">
+                        <table>
+                            <thead>
+                                <tr>
+                                    {% for column in preview.columns %}
+                                    <th>{{ column }}</th>
+                                    {% endfor %}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for row in preview.rows %}
+                                <tr>
+                                    {% for column in preview.columns %}
+                                    <td>{{ row[column] }}</td>
+                                    {% endfor %}
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </section>
+    </main>
+</body>
+</html>

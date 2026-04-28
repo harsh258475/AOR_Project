@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hospital Network Design and Patient Allocation Optimization in Delhi NCR</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <header class="topbar">
+        <div>
+            <h1>Hospital Network Design and Patient Allocation Optimization in Delhi NCR</h1>
+            <p class="subtitle">Decision-support workspace for hub expansion, patient assignment, and comparative cost analysis across the Delhi NCR case.</p>
+        </div>
+        <div class="topbar-actions">
+            <a href="{{ case_study_url }}" target="_blank" rel="noreferrer">Case Study</a>
+            <a href="{{ dataset_page_url }}" target="_blank" rel="noreferrer">Dataset</a>
+            <span id="app-status" class="status-pill">Ready</span>
+        </div>
+    </header>
+
+    <main class="page-grid">
+        <section class="panel controls-panel">
+            <div class="section-header">
+                <h2>Scenario</h2>
+                <div class="inline-actions">
+                    <button id="reset-config" type="button" class="secondary">Reset Defaults</button>
+                    <button id="run-scenario" type="button" class="primary">Run Optimization</button>
+                </div>
+            </div>
+
+            <form id="scenario-form" class="control-grid">
+                <label>
+                    <span>Hospitals to expand (P)</span>
+                    <input id="p_expansions" name="p_expansions" type="number" min="1" step="1">
+                </label>
+                <label>
+                    <span>Added beds per expansion (X)</span>
+                    <input id="added_beds_per_expansion" name="added_beds_per_expansion" type="number" min="1" step="1">
+                </label>
+                <label>
+                    <span>Dual upper bound factor</span>
+                    <input id="dual_ub_factor" name="dual_ub_factor" type="number" min="0.01" step="0.01">
+                </label>
+                <label>
+                    <span>Time limit (seconds)</span>
+                    <input id="time_limit_seconds" name="time_limit_seconds" type="number" min="1" step="1">
+                </label>
+                <label>
+                    <span>Initial incumbent hubs</span>
+                    <input
+                        id="fixed_hub_hospital_ids"
+                        name="fixed_hub_hospital_ids"
+                        type="text"
+                        placeholder="H1,H8,H9">
+                </label>
+                <label class="checkbox-row">
+                    <input id="show_solver_log" name="show_solver_log" type="checkbox">
+                    <span>Capture solver log</span>
+                </label>
+                <label class="checkbox-row">
+                    <input id="export_model_file" name="export_model_file" type="checkbox">
+                    <span>Export LP model file</span>
+                </label>
+            </form>
+
+            <div class="upload-grid">
+                <div>
+                    <h3>Dataset Source</h3>
+                    <p class="muted">Leave files empty to use the project CSVs already in this workspace.</p>
+                </div>
+                <label>
+                    <span>Distance matrix CSV</span>
+                    <input id="distance-file" type="file" accept=".csv,text/csv">
+                </label>
+                <label>
+                    <span>Hospitals CSV</span>
+                    <input id="hospitals-file" type="file" accept=".csv,text/csv">
+                </label>
+                <label>
+                    <span>Zones CSV</span>
+                    <input id="zones-file" type="file" accept=".csv,text/csv">
+                </label>
+            </div>
+
+            <div id="request-error" class="error-banner hidden"></div>
+        </section>
+
+        <section class="panel dataset-panel">
+            <div class="section-header">
+                <h2>Dataset</h2>
+                <button id="reload-dataset" type="button" class="secondary">Reload Default Preview</button>
+            </div>
+            <div id="dataset-summary" class="summary-grid"></div>
+            <div class="preview-grid">
+                <div>
+                    <h3>Hospitals</h3>
+                    <div id="hospitals-preview" class="table-shell"></div>
+                </div>
+                <div>
+                    <h3>Zones</h3>
+                    <div id="zones-preview" class="table-shell"></div>
+                </div>
+                <div class="full-span">
+                    <h3>Distance Matrix Sample</h3>
+                    <div id="distance-preview" class="table-shell"></div>
+                </div>
+            </div>
+        </section>
+
+        <section class="panel full-span">
+            <div class="section-header">
+                <h2>Results</h2>
+                <div id="solve-meta" class="muted">Run a scenario to populate results.</div>
+            </div>
+            <div id="metrics" class="metric-grid"></div>
+        </section>
+
+        <section id="dataset-library" class="panel full-span">
+            <div class="section-header">
+                <h2>Case Material</h2>
+                <div class="inline-actions">
+                    <a class="artifact-link" href="{{ case_study_url }}" target="_blank" rel="noreferrer">Open Case Study</a>
+                    <a class="artifact-link" href="/case-study/download">Download Case Study</a>
+                </div>
+            </div>
+            <div class="resource-grid">
+                <div class="resource-card">
+                    <h3>Project Document</h3>
+                    <p class="muted">Read the full AOR case formulation, assumptions, and problem context.</p>
+                    <div class="resource-links">
+                        <a class="artifact-link" href="{{ case_study_url }}" target="_blank" rel="noreferrer">View Case Study</a>
+                        <a class="artifact-link" href="/case-study/download">Download DOCX</a>
+                    </div>
+                </div>
+                <div class="resource-card">
+                    <h3>Dataset Files</h3>
+                    <div class="resource-links">
+                        <a class="artifact-link" href="{{ dataset_page_url }}" target="_blank" rel="noreferrer">Open Dataset Viewer</a>
+                        {% for name, url in dataset_links.items() %}
+                        <a class="artifact-link" href="{{ url }}" target="_blank" rel="noreferrer">{{ name }}</a>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="panel full-span">
+            <div class="section-header">
+                <h2>Network View</h2>
+                <div class="legend">
+                    <span><i class="legend-swatch hospital"></i> Hospital</span>
+                    <span><i class="legend-swatch expanded"></i> Expanded hospital</span>
+                    <span><i class="legend-swatch zone"></i> Zone</span>
+                </div>
+            </div>
+            <div class="network-grid">
+                <div>
+                    <h3>Current Assignment</h3>
+                    <div id="current-network" class="network-shell empty-state">Awaiting solution.</div>
+                </div>
+                <div>
+                    <h3>Optimized Assignment</h3>
+                    <div id="optimized-network" class="network-shell empty-state">Awaiting solution.</div>
+                </div>
+            </div>
+        </section>
+
+        <section class="panel full-span">
+            <div class="section-header">
+                <h2>Selected Hospitals</h2>
+            </div>
+            <div id="selected-hospitals-table" class="table-shell empty-state">Awaiting solution.</div>
+        </section>
+
+        <section class="panel full-span">
+            <div class="section-header">
+                <h2>Hospital Capacity and Load</h2>
+            </div>
+            <div id="hospital-summary-table" class="table-shell empty-state">Awaiting solution.</div>
+        </section>
+
+        <section class="panel full-span">
+            <div class="section-header">
+                <h2>Routing Matrices</h2>
+                <div class="inline-actions">
+                    <button id="download-current-matrix" type="button" class="secondary" disabled>Download Current CSV</button>
+                    <button id="download-optimized-matrix" type="button" class="secondary" disabled>Download Optimized CSV</button>
+                </div>
+            </div>
+            <div class="matrix-grid">
+                <div>
+                    <h3>Current</h3>
+                    <div id="current-matrix-table" class="table-shell empty-state">Awaiting solution.</div>
+                </div>
+                <div>
+                    <h3>Optimized</h3>
+                    <div id="optimized-matrix-table" class="table-shell empty-state">Awaiting solution.</div>
+                </div>
+            </div>
+        </section>
+
+        <section class="panel full-span">
+            <div class="section-header">
+                <h2>Allocation Records</h2>
+                <div id="artifact-links" class="inline-actions"></div>
+            </div>
+            <div id="allocation-table" class="table-shell empty-state">Awaiting solution.</div>
+        </section>
+
+        <section class="panel full-span">
+            <div class="section-header">
+                <h2>Iteration Log</h2>
+            </div>
+            <pre id="solver-log" class="log-shell empty-state">Run a scenario to inspect each bilevel stage and its solver trace.</pre>
+        </section>
+    </main>
+
+    <script>
+        window.DEFAULT_CONFIG = {{ default_config | tojson }};
+    </script>
+    <script src="/static/app.js"></script>
+</body>
+</html>

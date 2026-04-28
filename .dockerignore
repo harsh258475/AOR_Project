@@ -1,0 +1,9 @@
+.git
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+mtsp_app/.venv
+mtsp_app/__pycache__
+mtsp_app/**/*.pyc

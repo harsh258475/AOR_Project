@@ -1,0 +1,56 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Virtual environments (if you create later)
+.env
+.venv
+venv/
+env/
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment variables
+.env.*
+*.env
+
+# Database files (if added later)
+*.db
+*.sqlite3
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+
+# Docker runtime files
+*.pid
+*.sock
+
+# Temporary files
+*.tmp
+*.temp
+
+# Jupyter checkpoints (just in case)
+.ipynb_checkpoints/
+
+# Model / optimization outputs (optional - depends if you want to track)
+# Uncomment if these are generated outputs and NOT source data
+# *.lp
+# *.png
+# artifacts/
+
+# CSV outputs (⚠️ careful — only ignore if generated, not input data)
+# optimized_*.csv
+# current_routing_matrix.csv

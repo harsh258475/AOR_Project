@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }} | Case Study</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <header class="topbar">
+        <div>
+            <h1>Case Study</h1>
+            <p class="subtitle">{{ title }}</p>
+        </div>
+        <div class="topbar-actions">
+            <a href="/" rel="noreferrer">Main App</a>
+            <a href="{{ download_url }}">Download DOCX</a>
+        </div>
+    </header>
+
+    <main class="reader-shell">
+        <section class="panel reader-panel">
+            <div class="section-header">
+                <h2>Document Preview</h2>
+                <a class="artifact-link" href="{{ download_url }}">Download Case Study</a>
+            </div>
+            <div class="doc-preview">
+                {% for section in sections %}
+                <p>{{ section }}</p>
+                {% endfor %}
+            </div>
+        </section>
+    </main>
+</body>
+</html>
