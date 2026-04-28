@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from io import StringIO
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 import logging
 
@@ -213,6 +214,7 @@ def solve_bilevel_optimization(
     model_file_path: Path | None = None
     solver_log_sections: list[str] = []
     iteration_history: list[dict[str, Any]] = []
+    solve_start_time = perf_counter()
 
     logger.info(
         "Starting branch-and-cut bilevel optimization with %s hospitals, %s zones, p=%s.",
@@ -286,10 +288,12 @@ def solve_bilevel_optimization(
                 "customer_benefit": round(incumbent_solution["customer_benefit"], 2),
                 "travel_cost": round(incumbent_solution["follower_cost"], 2),
                 "runtime_seconds": round(incumbent_solution["runtime_seconds"], 4),
+                "elapsed_seconds": round(perf_counter() - solve_start_time, 4),
             }
         )
         iteration_log_lines.extend(
             [
+                f"Iteration 0 elapsed={iteration_history[-1]['elapsed_seconds']:.4f}s",
                 f"Incumbent hubs={incumbent_solution['selected_hospital_ids']}",
                 f"Incumbent status={incumbent_solution['status_name']}",
                 f"Incumbent customer benefit={incumbent_solution['customer_benefit']:,.2f}",
@@ -351,11 +355,13 @@ def solve_bilevel_optimization(
             "customer_benefit": round(stage1_solution["customer_benefit"], 2),
             "travel_cost": round(stage1_solution["follower_cost"], 2),
             "runtime_seconds": round(stage1_solution["runtime_seconds"], 4),
+            "elapsed_seconds": round(perf_counter() - solve_start_time, 4),
         }
     )
     iteration_log_lines.extend(
         [
             "Stage 1: maximize customer benefit over all hub selections.",
+            f"Iteration 1 elapsed={iteration_history[-1]['elapsed_seconds']:.4f}s",
             f"Stage 1 optimal status={stage1_solution['status_name']}",
             f"Stage 1 optimal hubs={stage1_solution['selected_hospital_ids']}",
             f"Stage 1 optimal customer benefit={stage1_solution['customer_benefit']:,.2f}",
@@ -422,17 +428,19 @@ def solve_bilevel_optimization(
             "customer_benefit": round(final_solution["customer_benefit"], 2),
             "travel_cost": round(final_solution["follower_cost"], 2),
             "runtime_seconds": round(final_solution["runtime_seconds"], 4),
+            "elapsed_seconds": round(perf_counter() - solve_start_time, 4),
         }
     )
     iteration_log_lines.extend(
         [
             "Stage 2: minimize leader cost at the globally optimal customer benefit.",
+            f"Iteration 2 elapsed={iteration_history[-1]['elapsed_seconds']:.4f}s",
             f"Stage 2 optimal status={final_solution['status_name']}",
             f"Stage 2 optimal hubs={final_solution['selected_hospital_ids']}",
             f"Stage 2 optimal customer benefit={final_solution['customer_benefit']:,.2f}",
             f"Stage 2 optimal leader cost={final_solution['leader_cost']:,.2f}",
             f"Stage 2 optimal travel cost={final_solution['follower_cost']:,.2f}",
-            "Branch-and-cut bilevel solve completed.",
+            f"Branch-and-cut bilevel solve completed in {perf_counter() - solve_start_time:.4f}s.",
         ]
     )
 
@@ -1042,9 +1050,17 @@ def _build_network_payload(
     hospital_points = hospitals.merge(hospital_summary, on=["hospital_id", "name"], how="left")
     zone_points = zones[["zone_id", "x_coord", "y_coord", "patient_demand"]].copy()
 
+    provided_hubs = set(result["comparison"].get("provided_hubs", []))
+    optimal_hubs = set(result["comparison"].get("optimal_hubs", []))
+
+    hospital_points = hospital_points.assign(
+        current_hub=hospital_points["hospital_id"].isin(provided_hubs).astype(int),
+        optimal_hub=hospital_points["hospital_id"].isin(optimal_hubs).astype(int),
+    )
+
     current_edges = zone_points.merge(result["current_primary_assignment"], on="zone_id", how="left")
     current_edges = current_edges.merge(
-        hospital_points[["hospital_id", "x_coord", "y_coord", "expanded"]],
+        hospital_points[["hospital_id", "x_coord", "y_coord", "current_hub"]],
         on="hospital_id",
         how="left",
         suffixes=("_zone", "_hospital"),
@@ -1052,7 +1068,7 @@ def _build_network_payload(
 
     optimized_edges = zone_points.merge(result["allocation"], on="zone_id", how="left")
     optimized_edges = optimized_edges.merge(
-        hospital_points[["hospital_id", "x_coord", "y_coord", "expanded"]],
+        hospital_points[["hospital_id", "x_coord", "y_coord", "optimal_hub"]],
         on="hospital_id",
         how="left",
         suffixes=("_zone", "_hospital"),
@@ -1070,9 +1086,11 @@ def _build_network_payload(
                     "y_coord",
                     "current_capacity",
                     "current_load",
+                    "current_hub",
                     "expanded",
                     "optimized_capacity",
                     "optimized_load",
+                    "optimal_hub",
                     "current_overload",
                     "optimized_slack",
                 ]
@@ -1088,7 +1106,7 @@ def _build_network_payload(
                     "y_coord_zone",
                     "x_coord_hospital",
                     "y_coord_hospital",
-                    "expanded",
+                    "current_hub",
                 ]
             ]
         ),
@@ -1102,7 +1120,7 @@ def _build_network_payload(
                     "y_coord_zone",
                     "x_coord_hospital",
                     "y_coord_hospital",
-                    "expanded",
+                    "optimal_hub",
                 ]
             ]
         ),

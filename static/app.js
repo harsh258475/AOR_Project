@@ -285,6 +285,10 @@ function renderNetwork(container, network, edgeKey) {
     const zones = network.zones || [];
     const edges = network[edgeKey] || [];
     const maxFlow = Math.max(1, ...edges.map((edge) => Number(edge.assigned_patients || 0)));
+    const isCurrentView = edgeKey === "current_edges";
+    const activeLoadField = isCurrentView ? "current_load" : "optimized_load";
+    const activeCapacityField = isCurrentView ? "current_capacity" : "optimized_capacity";
+    const activeHubField = isCurrentView ? "current_hub" : "optimal_hub";
 
     const margin = 8;
     const scale = 0.82;
@@ -294,7 +298,7 @@ function renderNetwork(container, network, edgeKey) {
 
     const edgeSvg = edges
         .map((edge) => {
-            const stroke = edge.expanded ? "#a16e00" : "#7b8794";
+            const stroke = edge[activeHubField] ? "#a16e00" : "#7b8794";
             const width = 0.3 + 2.1 * Number(edge.assigned_patients || 0) / maxFlow;
             return `
                 <line
@@ -332,9 +336,8 @@ function renderNetwork(container, network, edgeKey) {
         `)
         .join("");
 
-    const activeLoadField = edgeKey === "current_edges" ? "current_load" : "optimized_load";
     const displayHospitals = hospitalMarkers.filter((hospital) => {
-        if (hospital.expanded === 1) {
+        if (hospital[activeHubField] === 1) {
             return true;
         }
         return Number(hospital[activeLoadField] || 0) > 0;
@@ -349,7 +352,9 @@ function renderNetwork(container, network, edgeKey) {
         .filter((hospital) => rankedHospitals.some((ranked) => ranked.hospital_id === hospital.hospital_id))
         .sort((left, right) => left.plotY - right.plotY)
         .map((hospital) => {
-            const labelText = String(hospital.hospital_id);
+            const labelText = hospital[activeHubField] === 1
+                ? `${hospital.hospital_id} (Hub)`
+                : String(hospital.hospital_id);
             const preferredOffsetX = hospital.plotX < 50 ? 2.2 : -7.1;
             const preferredOffsetY = hospital.plotY < 50 ? -2.2 : 2.8;
 
@@ -423,8 +428,9 @@ function renderNetwork(container, network, edgeKey) {
         .map((hospital) => {
             const x = hospital.plotX;
             const y = hospital.plotY;
-            const size = hospital.expanded ? 3.3 : 2.2;
-            const fill = hospital.expanded ? "#d4a017" : "#355c7d";
+            const isHub = hospital[activeHubField] === 1;
+            const size = isHub ? 3.3 : 2.2;
+            const fill = isHub ? "#d4a017" : "#355c7d";
             return `
                 <g>
                     <rect
@@ -435,7 +441,7 @@ function renderNetwork(container, network, edgeKey) {
                         fill="${fill}"
                         stroke="#17212b"
                         stroke-width="0.35">
-                        <title>${escapeHtml(`${hospital.hospital_id} | load ${formatNumber(hospital.optimized_load)} / ${formatNumber(hospital.optimized_capacity)}`)}</title>
+                        <title>${escapeHtml(`${hospital.hospital_id} | load ${formatNumber(hospital[activeLoadField])} / ${formatNumber(hospital[activeCapacityField])} | ${isHub ? "hub" : "non-hub"}`)}</title>
                     </rect>
                 </g>
             `;

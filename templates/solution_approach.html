@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <header class="topbar">
+        <div>
+            <h1>Solution Approach</h1>
+            <p class="subtitle">Leader-follower structure with exact hospital-combination enumeration and follower LP optimization.</p>
+        </div>
+        <div class="topbar-actions">
+            <a href="/" rel="noreferrer">Main App</a>
+            <a href="{{ case_study_url }}" target="_blank" rel="noreferrer">Case Study</a>
+            <a href="{{ dataset_page_url }}" target="_blank" rel="noreferrer">Dataset</a>
+        </div>
+    </header>
+
+    <main class="reader-shell">
+        <section class="panel reader-panel solution-stack">
+            <div class="solution-band">
+                <h2>1. Bilevel Structure</h2>
+                <p>The upper level selects exactly <code>P</code> hospitals for expansion. Let <code>y_i in {0,1}</code> denote whether hospital <code>i</code> is expanded.</p>
+                <div class="formula-block">
+                    <div>Leader decision:</div>
+                    <pre>min   Sum_i c_i y_i</pre>
+                    <div>subject to</div>
+                    <pre>Sum_i y_i = P</pre>
+                </div>
+                <p>The lower level allocates zone demand to hospitals. In the benefit view, each route has benefit <code>b_ij = M - t_ij</code>, where <code>t_ij</code> is travel cost and <code>M = max(i,j) t_ij</code>.</p>
+                <div class="formula-block">
+                    <div>Primal follower:</div>
+                    <pre>max   Sum_i Sum_j b_ij q_ij
+s.t.  Sum_i q_ij = d_j                                  for all j
+      Sum_j q_ij &lt;= cap_i + X y_i                       for all i
+      q_ij &gt;= 0</pre>
+                </div>
+            </div>
+
+            <div class="solution-band">
+                <h2>2. Exact Enumeration Strategy</h2>
+                <p>The implemented solver does not use a single mixed-integer reformulation. Instead, it enumerates every hospital subset of size <code>P</code> and solves the follower allocation LP for each subset.</p>
+                <div class="formula-block">
+                    <pre>for each S subset of Hospitals with |S| = P:
+    solve   min   Sum_i Sum_j t_ij q_ij
+    s.t.    Sum_i q_ij = d_j                            for all j
+            Sum_j q_ij &lt;= cap_i + X * 1{i in S}         for all i
+            q_ij &gt;= 0</pre>
+                </div>
+                <p>The global optimum is the combination <code>S</code> with minimum total cost:</p>
+                <div class="formula-block">
+                    <pre>min over S:  Sum_{i in S} c_i + follower_cost(S)</pre>
+                </div>
+            </div>
+
+            <div class="solution-band">
+                <h2>3. Follower LP</h2>
+                <p>For any fixed expansion subset, the lower-level problem is a continuous transportation LP. Only the hospital capacities change across combinations.</p>
+                <div class="formula-block">
+                    <pre>min   Sum_i Sum_j t_ij q_ij
+s.t.  Sum_i q_ij = d_j                                  for all j
+      Sum_j q_ij &lt;= cap_i + X * 1{i in S}               for all i
+      q_ij &gt;= 0</pre>
+                </div>
+                <p>This LP is solved exactly for each candidate subset <code>S</code>. Because every subset is evaluated, the final answer is globally optimal over the combinatorial leader decision.</p>
+            </div>
+
+            <div class="solution-band">
+                <h2>4. Warm Start Interpretation</h2>
+                <p>The provided hospital IDs are treated as an initial candidate combination. They are evaluated first for comparison, but they do not restrict the search.</p>
+                <div class="formula-block">
+                    <pre>Initial candidate:
+  S0 = {provided hospital IDs}
+
+Global search:
+  evaluate all S with |S| = P</pre>
+                </div>
+                <p>If the provided combination is not optimal, enumeration continues until every combination has been checked.</p>
+            </div>
+
+            <div class="solution-band">
+                <h2>5. Example Incumbent Update</h2>
+                <p>This is the type of progress record the solver trace represents during exact enumeration.</p>
+                <div class="table-shell">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Iteration</th>
+                                <th>Checked Combinations</th>
+                                <th>Incumbent Hubs</th>
+                                <th>Leader Cost</th>
+                                <th>Route Cost</th>
+                                <th>Event</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>{{ example_iteration.iteration }}</td>
+                                <td>{{ example_iteration.checked_combinations }}</td>
+                                <td>{{ example_iteration.incumbent_hubs | join(", ") }}</td>
+                                <td>{{ example_iteration.leader_cost }}</td>
+                                <td>{{ example_iteration.route_cost }}</td>
+                                <td>{{ example_iteration.event }}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <p class="muted">The live solver trace in the main app shows the enumeration log together with the final exact-optimal summary.</p>
+            </div>
+        </section>
+    </main>
+</body>
+</html>

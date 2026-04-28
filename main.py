@@ -61,10 +61,13 @@ def index(request: Request) -> HTMLResponse:
             "request": request,
             "default_config": OptimizationConfig().as_dict(),
             "case_study_url": "/case-study",
+            "solution_approach_url": "/solution-approach",
             "dataset_links": {name: f"/dataset/file/{name}" for name in DATASET_FILES},
             "dataset_page_url": "/dataset",
         },
     )
+
+
 
 
 @app.get("/api/health")
@@ -94,6 +97,30 @@ def case_study_page(request: Request) -> HTMLResponse:
             "title": "Hospital Network Design and Patient Allocation Optimization in Delhi NCR",
             "download_url": "/case-study/download",
             "sections": _extract_docx_sections(CASE_STUDY_FILE),
+            "solution_approach_url": "/solution-approach",
+            "dataset_page_url": "/dataset",
+        },
+    )
+
+
+@app.get("/solution-approach", response_class=HTMLResponse)
+def solution_approach_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="solution_approach.html",
+        context={
+            "request": request,
+            "title": "Solution Approach",
+            "dataset_page_url": "/dataset",
+            "case_study_url": "/case-study",
+            "example_iteration": {
+                "iteration": 14,
+                "checked_combinations": "128,440 / 2,035,800",
+                "incumbent_hubs": ["H3", "H6", "H8", "H9", "H10", "H11", "H18"],
+                "leader_cost": "21,528,929,871.00",
+                "route_cost": "2,155,619.43",
+                "event": "new best combination after follower LP evaluation",
+            },
         },
     )
 
@@ -162,6 +189,11 @@ def solve_scenario(payload: ScenarioRequest) -> dict:
             response["artifacts"]["model_file_url"] = f"/artifacts/{model_file_name}"
         else:
             response["artifacts"]["model_file_url"] = None
+        iteration_log_file_name = response["artifacts"].get("iteration_log_file_name")
+        if iteration_log_file_name:
+            response["artifacts"]["iteration_log_file_url"] = f"/artifacts/{iteration_log_file_name}"
+        else:
+            response["artifacts"]["iteration_log_file_url"] = None
         return response
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
