@@ -3,114 +3,226 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ title }}</title>
+    <title>Solution Approach</title>
     <link rel="stylesheet" href="/static/styles.css">
 </head>
+
 <body>
-    <header class="topbar">
-        <div>
-            <h1>Solution Approach</h1>
-            <p class="subtitle">Leader-follower structure with exact hospital-combination enumeration and follower LP optimization.</p>
-        </div>
-        <div class="topbar-actions">
-            <a href="/" rel="noreferrer">Main App</a>
-            <a href="{{ case_study_url }}" target="_blank" rel="noreferrer">Case Study</a>
-            <a href="{{ dataset_page_url }}" target="_blank" rel="noreferrer">Dataset</a>
-        </div>
-    </header>
 
-    <main class="reader-shell">
-        <section class="panel reader-panel solution-stack">
-            <div class="solution-band">
-                <h2>1. Bilevel Structure</h2>
-                <p>The upper level selects exactly <code>P</code> hospitals for expansion. Let <code>y_i in {0,1}</code> denote whether hospital <code>i</code> is expanded.</p>
-                <div class="formula-block">
-                    <div>Leader decision:</div>
-                    <pre>min   Sum_i c_i y_i</pre>
-                    <div>subject to</div>
-                    <pre>Sum_i y_i = P</pre>
-                </div>
-                <p>The lower level allocates zone demand to hospitals. In the benefit view, each route has benefit <code>b_ij = M - t_ij</code>, where <code>t_ij</code> is travel cost and <code>M = max(i,j) t_ij</code>.</p>
-                <div class="formula-block">
-                    <div>Primal follower:</div>
-                    <pre>max   Sum_i Sum_j b_ij q_ij
-s.t.  Sum_i q_ij = d_j                                  for all j
-      Sum_j q_ij &lt;= cap_i + X y_i                       for all i
-      q_ij &gt;= 0</pre>
-                </div>
-            </div>
+<header class="topbar">
+    <div>
+        <h1>Solution Approach</h1>
+        <p class="subtitle">
+            Bilevel optimization with dual reformulation and exact enumeration.
+        </p>
+    </div>
+</header>
 
-            <div class="solution-band">
-                <h2>2. Exact Enumeration Strategy</h2>
-                <p>The implemented solver does not use a single mixed-integer reformulation. Instead, it enumerates every hospital subset of size <code>P</code> and solves the follower allocation LP for each subset.</p>
-                <div class="formula-block">
-                    <pre>for each S subset of Hospitals with |S| = P:
-    solve   min   Sum_i Sum_j t_ij q_ij
-    s.t.    Sum_i q_ij = d_j                            for all j
-            Sum_j q_ij &lt;= cap_i + X * 1{i in S}         for all i
-            q_ij &gt;= 0</pre>
-                </div>
-                <p>The global optimum is the combination <code>S</code> with minimum total cost:</p>
-                <div class="formula-block">
-                    <pre>min over S:  Sum_{i in S} c_i + follower_cost(S)</pre>
-                </div>
-            </div>
+<main class="reader-shell">
+<section class="panel reader-panel solution-stack">
 
-            <div class="solution-band">
-                <h2>3. Follower LP</h2>
-                <p>For any fixed expansion subset, the lower-level problem is a continuous transportation LP. Only the hospital capacities change across combinations.</p>
-                <div class="formula-block">
-                    <pre>min   Sum_i Sum_j t_ij q_ij
-s.t.  Sum_i q_ij = d_j                                  for all j
-      Sum_j q_ij &lt;= cap_i + X * 1{i in S}               for all i
-      q_ij &gt;= 0</pre>
-                </div>
-                <p>This LP is solved exactly for each candidate subset <code>S</code>. Because every subset is evaluated, the final answer is globally optimal over the combinatorial leader decision.</p>
-            </div>
+<!-- ===================================================== -->
+<!-- 1. BILEVEL STRUCTURE -->
+<!-- ===================================================== -->
+<div class="solution-band">
+    <h2>1. Bilevel Problem Structure</h2>
 
-            <div class="solution-band">
-                <h2>4. Warm Start Interpretation</h2>
-                <p>The provided hospital IDs are treated as an initial candidate combination. They are evaluated first for comparison, but they do not restrict the search.</p>
-                <div class="formula-block">
-                    <pre>Initial candidate:
-  S0 = {provided hospital IDs}
+    <p>
+        The problem is formulated as a bilevel optimization model where the leader selects hospitals for expansion,
+        and the follower allocates patients to hospitals.
+    </p>
 
-Global search:
-  evaluate all S with |S| = P</pre>
-                </div>
-                <p>If the provided combination is not optimal, enumeration continues until every combination has been checked.</p>
-            </div>
+    <div class="formula-block">
+<pre>
+min   Σi ci yi
+s.t.  Σi yi = P
+      yi ∈ {0,1}
+</pre>
+    </div>
+</div>
 
-            <div class="solution-band">
-                <h2>5. Example Incumbent Update</h2>
-                <p>This is the type of progress record the solver trace represents during exact enumeration.</p>
-                <div class="table-shell">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Iteration</th>
-                                <th>Checked Combinations</th>
-                                <th>Incumbent Hubs</th>
-                                <th>Leader Cost</th>
-                                <th>Route Cost</th>
-                                <th>Event</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <tr>
-                                <td>{{ example_iteration.iteration }}</td>
-                                <td>{{ example_iteration.checked_combinations }}</td>
-                                <td>{{ example_iteration.incumbent_hubs | join(", ") }}</td>
-                                <td>{{ example_iteration.leader_cost }}</td>
-                                <td>{{ example_iteration.route_cost }}</td>
-                                <td>{{ example_iteration.event }}</td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-                <p class="muted">The live solver trace in the main app shows the enumeration log together with the final exact-optimal summary.</p>
-            </div>
-        </section>
-    </main>
+<!-- ===================================================== -->
+<!-- 2. PRIMAL FOLLOWER -->
+<!-- ===================================================== -->
+<div class="solution-band">
+    <h2>2. Primal Follower (Benefit Maximization)</h2>
+
+    <p>
+        The follower maximizes total patient benefit, where benefit decreases with travel distance.
+    </p>
+
+    <div class="formula-block">
+<pre>
+max   Σi Σj bij qij
+
+s.t.  Σi qij = dj                      ∀ j
+      Σj qij ≤ î + X yi            ∀ i
+      qij ≥ 0
+</pre>
+    </div>
+
+    <p>
+        Benefit is defined as <code>bij = M − tij</code>, where <code>tij</code> is travel cost.
+    </p>
+</div>
+
+<!-- ===================================================== -->
+<!-- 3. DUAL -->
+<!-- ===================================================== -->
+<div class="solution-band">
+    <h2>3. Dual of the Follower Problem</h2>
+
+    <p>
+        To convert the bilevel problem into a single-level formulation, we derive the dual of the follower LP.
+        Dual variables are introduced for each constraint:
+    </p>
+
+    <ul>
+        <li><code>πj</code> for demand constraints</li>
+        <li><code>μi ≥ 0</code> for capacity constraints</li>
+    </ul>
+
+    <div class="formula-block">
+<pre>
+min   Σj dj πj + Σi (î + X yi) μi
+
+s.t.  πj + μi ≥ bij         ∀ i,j
+      μi ≥ 0
+</pre>
+    </div>
+
+    <p>
+        The dual captures the marginal value of satisfying demand and using capacity.
+    </p>
+</div>
+
+<!-- ===================================================== -->
+<!-- 4. STRONG DUALITY -->
+<!-- ===================================================== -->
+<div class="solution-band">
+    <h2>4. Strong Duality</h2>
+
+    <p>
+        At optimality, the primal and dual objective values are equal.
+    </p>
+
+    <div class="formula-block">
+<pre>
+Σi Σj bij qij
+=
+Σj dj πj + Σi (î + X yi) μi
+</pre>
+    </div>
+</div>
+
+<!-- ===================================================== -->
+<!-- 5. SINGLE LEVEL -->
+<!-- ===================================================== -->
+<div class="solution-band">
+    <h2>5. Single-Level Reformulation</h2>
+
+    <p>
+        The bilevel problem is transformed into a single-level optimization problem by embedding:
+    </p>
+
+    <ul>
+        <li>Primal feasibility constraints</li>
+        <li>Dual feasibility constraints</li>
+        <li>Strong duality condition</li>
+    </ul>
+
+    <div class="formula-block">
+<pre>
+min   Σi ci yi
+
+s.t.  primal constraints
+      dual constraints
+      strong duality condition
+</pre>
+    </div>
+
+    <p>
+        This results in a mixed-integer linear programming (MILP) formulation.
+    </p>
+</div>
+
+<!-- ===================================================== -->
+<!-- 6. SIMPLIFICATION -->
+<!-- ===================================================== -->
+<div class="solution-band">
+    <h2>6. Problem Simplification</h2>
+
+    <p>
+        Since benefit is defined as <code>bij = M − tij</code>, maximizing benefit is equivalent to minimizing travel cost.
+        Therefore, the follower problem reduces to a transportation problem:
+    </p>
+
+    <div class="formula-block">
+<pre>
+min   Σi Σj tij qij
+
+s.t.  Σi qij = dj
+      Σj qij ≤ î + X yi
+      qij ≥ 0
+</pre>
+    </div>
+
+    <p>
+        This eliminates the need to explicitly solve the dual in implementation.
+    </p>
+</div>
+
+<!-- ===================================================== -->
+<!-- 7. FINAL MODEL -->
+<!-- ===================================================== -->
+<div class="solution-band">
+    <h2>7. Final Equivalent Problem</h2>
+
+    <div class="formula-block">
+<pre>
+min over S:
+    Σ{i ∈ S} ci + routing_cost(S)
+</pre>
+    </div>
+
+    <p>
+        The routing cost is obtained by solving the follower transportation problem.
+    </p>
+</div>
+
+<!-- ===================================================== -->
+<!-- 8. ENUMERATION -->
+<!-- ===================================================== -->
+<div class="solution-band">
+    <h2>Exact  Strategy</h2>
+
+    <div class="formula-block">
+<pre>
+for each subset S with |S| = P:
+    solve follower LP
+    compute total cost
+    update best solution
+</pre>
+    </div>
+
+
+</div>
+
+<!-- ===================================================== -->
+<!-- 9. SUMMARY -->
+<!-- ===================================================== -->
+<div class="solution-band">
+    <h2>Summary</h2>
+
+    <p>
+        The bilevel problem is theoretically converted into a single-level formulation using duality and strong duality.
+        However, due to the structure of the benefit function, the follower simplifies to a transportation model.
+        Therefore, an exact enumeration approach is used to efficiently obtain the global optimum.
+    </p>
+</div>
+
+</section>
+</main>
+
 </body>
 </html>

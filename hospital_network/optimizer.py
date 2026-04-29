@@ -277,7 +277,26 @@ def solve_bilevel_optimization(distance, hospitals, zones, config, **kwargs):
                 matrix.loc[j, i] = v
             return matrix
 
-        baseline_travel, baseline_alloc = solve_follower(set())
+        # baseline_travel, baseline_alloc = solve_follower(set())
+        # ---------------------------
+# BASELINE (REALISTIC - NO OPTIMIZATION)
+# ---------------------------
+        baseline_alloc = {}
+
+        for j in zone_ids:
+            # assign all demand to nearest hospital
+            best_i = min(hospital_ids, key=lambda i: travel_cost[(i, j)])
+            baseline_alloc[(best_i, j)] = demand[j]
+
+        baseline_assignment_df = build_assignment_dataframe(baseline_alloc)
+        baseline_routing = build_routing_matrix(baseline_alloc)
+
+        baseline_travel = sum(
+            travel_cost[i, j] * v for (i, j), v in baseline_alloc.items()
+        )
+
+
+
         baseline_leader = 0.0
         baseline_assignment_df = build_assignment_dataframe(baseline_alloc)
         baseline_routing = build_routing_matrix(baseline_alloc)
@@ -361,23 +380,38 @@ def solve_bilevel_optimization(distance, hospitals, zones, config, **kwargs):
         )
 
         summary = []
+
         for i in hospital_ids:
-            current_load = sum(provided_assignment_df.loc[provided_assignment_df["hospital_id"] == i, "assigned_patients"]) if not provided_assignment_df.empty else 0.0
+
+            # ---------------- CURRENT ----------------
+            if not provided_assignment_df.empty:
+                current_load = provided_assignment_df.loc[
+                    provided_assignment_df["hospital_id"] == i,
+                    "assigned_patients"
+                ].sum()
+            else:
+                current_load = 0.0
+
             current_capacity = base_beds[i] + (added if i in provided_hubs else 0)
             current_overload = max(0.0, current_load - current_capacity)
 
-            optimized_load = sum(best_alloc[(i, j)] for j in zone_ids)
+            # ---------------- OPTIMIZED ----------------
+            optimized_load = sum(best_alloc.get((i, j), 0.0) for j in zone_ids)
             optimized_capacity = base_beds[i] + (added if i in best_S else 0)
 
+            # ---------------- SUMMARY ----------------
             summary.append({
                 "hospital_id": i,
                 "name": names[i],
+
                 "current_capacity": current_capacity,
                 "current_load": current_load,
                 "current_overload": current_overload,
+
                 "optimized_capacity": optimized_capacity,
                 "optimized_load": optimized_load,
-                "optimized_slack": max(0, optimized_capacity - optimized_load),
+                "optimized_slack": max(0.0, optimized_capacity - optimized_load),
+
                 "expanded": int(i in best_S),
             })
 
