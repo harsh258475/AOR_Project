@@ -209,6 +209,9 @@ function renderHospitalSummary(container, records) {
                         <div>${formatNumber(row.current_utilization * 100)}%</div>
                     </td>
                     <td>${formatNumber(row.current_overload)}</td>
+                    <td>${formatNumber(row.current_slack)}</td>
+                    <td>${escapeHtml(row.current_status || "")}</td>
+                    <td>${escapeHtml(row.current_assignment || "")}</td>
                     <td>${formatNumber(row.optimized_capacity)}</td>
                     <td>${formatNumber(row.optimized_load)}</td>
                     <td>
@@ -235,6 +238,9 @@ function renderHospitalSummary(container, records) {
                     <th>Current Load</th>
                     <th>Current Utilization</th>
                     <th>Current Overload</th>
+                    <th>Current Slack</th>
+                    <th>Current Status</th>
+                    <th>Current Assignment</th>
                     <th>Optimized Capacity</th>
                     <th>Optimized Load</th>
                     <th>Optimized Utilization</th>
@@ -299,72 +305,104 @@ function renderNetwork(container, network, edgeKey) {
     const projectY = (y) => 100 - margin - scale * Number(y);
     const clamp = (value, min, max) => Math.max(min, Math.min(value, max));
 
-    const edgeSvg = edges
-        .map((edge) => {
-            const stroke = edge[activeHubField] ? "#a16e00" : "#7b8794";
-            const width = 0.3 + 2.1 * Number(edge.assigned_patients || 0) / maxFlow;
-            return `
-                <line
-                    x1="${projectX(edge.x_coord_zone)}"
-                    y1="${projectY(edge.y_coord_zone)}"
-                    x2="${projectX(edge.x_coord_hospital)}"
-                    y2="${projectY(edge.y_coord_hospital)}"
-                    stroke="${stroke}"
-                    stroke-opacity="0.35"
-                    stroke-width="${width}">
-                    <title>${escapeHtml(`${edge.zone_id} -> ${edge.hospital_id}: ${formatNumber(edge.assigned_patients)} patients`)}</title>
-                </line>
-            `;
-        })
-        .join("");
-
     const hospitalMarkers = hospitals.map((hospital) => ({
         ...hospital,
         plotX: projectX(hospital.x_coord),
         plotY: projectY(hospital.y_coord),
     }));
 
-    const zoneSvg = zones
-        .map((zone) => `
-            <g>
-                <circle
-                    cx="${projectX(zone.x_coord)}"
-                    cy="${projectY(zone.y_coord)}"
-                    r="${1.05 + Math.min(Number(zone.patient_demand || 0) / 260, 1.85)}"
-                    fill="#111827"
-                    fill-opacity="0.72">
-                    <title>${escapeHtml(`${zone.zone_id}: demand ${formatNumber(zone.patient_demand)}`)}</title>
-                </circle>
-            </g>
-        `)
+    const hubPalette = ["#ef4444", "#2563eb", "#16a34a", "#d97706", "#8b5cf6", "#0f766e", "#be123c", "#c2410c"];
+    const hubColorMap = {};
+    const hubMarkerMap = {};
+    let hubColorIndex = 0;
+
+    hospitalMarkers.forEach((hospital) => {
+        if (hospital[activeHubField] === 1) {
+            const color = hubPalette[hubColorIndex % hubPalette.length];
+            const markerId = `arrow-${hospital.hospital_id}`;
+            hubColorMap[hospital.hospital_id] = color;
+            hubMarkerMap[hospital.hospital_id] = markerId;
+            hubColorIndex += 1;
+        }
+    });
+
+    const markerDefs = Object.entries(hubMarkerMap)
+        .map(([hospitalId, markerId]) => {
+            const color = hubColorMap[hospitalId] || "#94a3b8";
+            return `
+                <marker id="${markerId}" viewBox="0 0 6 6" refX="5" refY="3" markerUnits="strokeWidth" markerWidth="4" markerHeight="4" orient="auto-start-reverse">
+                    <path d="M0,0 L6,3 L0,6 Z" fill="${color}" />
+                </marker>
+            `;
+        })
         .join("");
 
-    const displayHospitals = hospitalMarkers.filter((hospital) => {
-        if (hospital[activeHubField] === 1) {
-            return true;
-        }
-        return Number(hospital[activeLoadField] || 0) > 0;
-    });
-    const rankedHospitals = displayHospitals
+    const edgeSvg = edges
+        .map((edge) => {
+            const stroke = hubColorMap[edge.hospital_id] || "#7b8794";
+            const marker = hubMarkerMap[edge.hospital_id] ? `url(#${hubMarkerMap[edge.hospital_id]})` : "";
+            const width = 0.25 + 1.3 * Number(edge.assigned_patients || 0) / maxFlow;
+            return `
+                <line
+                    x1="${projectX(edge.x_coord_zone)}"
+                    y1="${projectY(edge.y_coord_zone)}"
+                    x2="${projectX(edge.x_coord_hospital)}"
+                    y2="${projectY(edge.y_coord_hospital)}"
+                    class="network-edge"
+                    stroke="${stroke}"
+                    stroke-opacity="0.72"
+                    stroke-width="${width}"
+                    marker-end="${marker}">
+                    <title>${escapeHtml(`${edge.zone_id} → ${edge.hospital_id}: ${formatNumber(edge.assigned_patients)} patients`)}</title>
+                </line>
+            `;
+        })
+        .join("");
+
+    const zoneSvg = zones
+        .map((zone) => {
+            const radius = 0.65 + Math.min(Number(zone.patient_demand || 0) / 360, 0.75);
+            return `
+            <g>
+                <circle
+                    class="zone-dot"
+                    cx="${projectX(zone.x_coord)}"
+                    cy="${projectY(zone.y_coord)}"
+                    r="${radius}"
+                    fill="#111827"
+                    fill-opacity="0.7">
+                    <title>${escapeHtml(`${zone.zone_id}: demand ${formatNumber(zone.patient_demand)}`)}</title>
+                </circle>
+                <text
+                    x="${projectX(zone.x_coord)}"
+                    y="${projectY(zone.y_coord) - 1.2}"
+                    class="zone-label"
+                    text-anchor="middle">
+                    ${escapeHtml(String(zone.zone_id))}
+                </text>
+            </g>
+        `;
+        })
+        .join("");
+
+    const hubMarkersOnly = hospitalMarkers.filter((hospital) => hospital[activeHubField] === 1);
+    const labelHospitals = hubMarkersOnly
         .slice()
         .sort((left, right) => Number(right[activeLoadField] || 0) - Number(left[activeLoadField] || 0))
         .slice(0, 8);
 
     const occupiedLabels = [];
-    const hospitalLabelSvg = hospitalMarkers
-        .filter((hospital) => rankedHospitals.some((ranked) => ranked.hospital_id === hospital.hospital_id))
+    const hospitalLabelSvg = labelHospitals
         .sort((left, right) => left.plotY - right.plotY)
         .map((hospital) => {
-            const labelText = hospital[activeHubField] === 1
-                ? `${hospital.hospital_id} (Hub)`
-                : String(hospital.hospital_id);
-            const preferredOffsetX = hospital.plotX < 50 ? 2.2 : -7.1;
-            const preferredOffsetY = hospital.plotY < 50 ? -2.2 : 2.8;
+            const labelText = String(hospital.hospital_id);
+            const preferredOffsetX = hospital.plotX < 50 ? 2.0 : -2.0;
+            const preferredOffsetY = hospital.plotY < 50 ? -2.4 : 2.8;
 
-            let labelX = clamp(hospital.plotX + preferredOffsetX, 1.5, 92.5);
+            let labelX = clamp(hospital.plotX + preferredOffsetX, 1.5, 94.5);
             let labelY = clamp(hospital.plotY + preferredOffsetY, 4.8, 96.5);
-            const width = 1.85 + labelText.length * 1.8;
-            const height = 4.05;
+            const width = 1.8 + labelText.length * 1.2;
+            const height = 3.6;
 
             const overlaps = (candidate) =>
                 occupiedLabels.some((box) => !(
@@ -375,24 +413,24 @@ function renderNetwork(container, network, edgeKey) {
                 ));
 
             let candidate = {
-                x: labelX - 1.05,
-                y: labelY - 3.3,
+                x: labelX - 1.0,
+                y: labelY - 2.8,
                 width,
                 height,
             };
 
             if (overlaps(candidate)) {
                 const alternatives = [
-                    { x: clamp(hospital.plotX + 2.2, 1.5, 92.5), y: clamp(hospital.plotY - 2.4, 4.8, 96.5) },
-                    { x: clamp(hospital.plotX + 2.2, 1.5, 92.5), y: clamp(hospital.plotY + 3.2, 4.8, 96.5) },
-                    { x: clamp(hospital.plotX - 7.4, 1.5, 92.5), y: clamp(hospital.plotY - 2.2, 4.8, 96.5) },
-                    { x: clamp(hospital.plotX - 7.4, 1.5, 92.5), y: clamp(hospital.plotY + 3.2, 4.8, 96.5) },
+                    { x: clamp(hospital.plotX + 2.0, 1.5, 94.5), y: clamp(hospital.plotY - 2.8, 4.8, 96.5) },
+                    { x: clamp(hospital.plotX + 2.0, 1.5, 94.5), y: clamp(hospital.plotY + 2.8, 4.8, 96.5) },
+                    { x: clamp(hospital.plotX - 3.4, 1.5, 94.5), y: clamp(hospital.plotY - 2.8, 4.8, 96.5) },
+                    { x: clamp(hospital.plotX - 3.4, 1.5, 94.5), y: clamp(hospital.plotY + 2.8, 4.8, 96.5) },
                 ];
 
                 for (const option of alternatives) {
                     const optionCandidate = {
-                        x: option.x - 1.05,
-                        y: option.y - 3.3,
+                        x: option.x - 1.0,
+                        y: option.y - 2.8,
                         width,
                         height,
                     };
@@ -418,34 +456,37 @@ function renderNetwork(container, network, edgeKey) {
                         y="${candidate.y}"
                         width="${candidate.width}"
                         height="${candidate.height}"
-                        rx="1.6"
-                        ry="1.6">
+                        rx="1.2"
+                        ry="1.2">
                     </rect>
-                    <text x="${labelX}" y="${labelY}" class="network-label">${escapeHtml(labelText)}</text>
+                    <text x="${labelX}" y="${labelY}" class="network-label" text-anchor="middle">${escapeHtml(labelText)}</text>
                 </g>
             `;
         })
         .join("");
 
-    const hospitalSvg = hospitalMarkers
+    const hospitalSvg = hubMarkersOnly
         .map((hospital) => {
             const x = hospital.plotX;
             const y = hospital.plotY;
-            const isHub = hospital[activeHubField] === 1;
-            const size = isHub ? 3.3 : 2.2;
-            const fill = isHub ? "#d4a017" : "#355c7d";
+            const fill = hubColorMap[hospital.hospital_id] || "#d97706";
+            const outer = 2.6;
+            const inner = 1.0;
+            const points = 5;
+            const coordinates = Array.from({ length: points * 2 }, (_, index) => {
+                const angle = (Math.PI / points) * index - Math.PI / 2;
+                const radius = index % 2 === 0 ? outer : inner;
+                return `${x + radius * Math.cos(angle)},${y + radius * Math.sin(angle)}`;
+            }).join(" ");
             return `
-                <g>
-                    <rect
-                        x="${x - size / 2}"
-                        y="${y - size / 2}"
-                        width="${size}"
-                        height="${size}"
+                <g class="network-node">
+                    <polygon points="${coordinates}"
+                        class="hub-star"
                         fill="${fill}"
-                        stroke="#17212b"
-                        stroke-width="0.35">
-                        <title>${escapeHtml(`${hospital.hospital_id} | load ${formatNumber(hospital[activeLoadField])} / ${formatNumber(hospital[activeCapacityField])} | ${isHub ? "hub" : "non-hub"}`)}</title>
-                    </rect>
+                        stroke="#0f172a"
+                        stroke-width="0.18">
+                        <title>${escapeHtml(`${hospital.hospital_id} | load ${formatNumber(hospital[activeLoadField])} / ${formatNumber(hospital[activeCapacityField])} | hub`)}</title>
+                    </polygon>
                 </g>
             `;
         })
@@ -458,6 +499,7 @@ function renderNetwork(container, network, edgeKey) {
                 <pattern id="network-grid-pattern" width="10" height="10" patternUnits="userSpaceOnUse">
                     <path d="M 10 0 L 0 0 0 10" fill="none" stroke="rgba(51, 84, 120, 0.08)" stroke-width="0.3"></path>
                 </pattern>
+                ${markerDefs}
             </defs>
             <rect x="6" y="6" width="88" height="88" fill="url(#network-grid-pattern)" stroke="rgba(71, 96, 124, 0.16)" stroke-width="0.35"></rect>
             <text x="9" y="12.8" class="network-axis-label">Projected service region</text>
@@ -510,6 +552,8 @@ function renderMetrics(payload) {
         elements.metrics.textContent = "Error: Missing comparison data in response.";
         return;
     }
+    const providedHubs = Array.isArray(comparison.provided_hubs) ? comparison.provided_hubs : [];
+    const optimalHubs = Array.isArray(comparison.optimal_hubs) ? comparison.optimal_hubs : [];
     renderComparisonGrid(elements.metrics, [
         {
             name: "Current Assignment",
@@ -520,14 +564,14 @@ function renderMetrics(payload) {
         },
         {
             name: "Provided Hospitals",
-            hubs: (comparison.provided_hubs && comparison.provided_hubs.length > 0) ? comparison.provided_hubs.join(", ") : "-",
+            hubs: providedHubs.length > 0 ? providedHubs.join(", ") : "-",
             totalCost: comparison.provided_total_cost,
             leaderCost: comparison.provided_leader_cost,
             distanceCost: comparison.provided_travel_cost,
         },
         {
             name: "Optimal Selection",
-            hubs: comparison.optimal_hubs ? comparison.optimal_hubs.join(", ") : "Unknown",
+            hubs: optimalHubs.length > 0 ? optimalHubs.join(", ") : "Unknown",
             totalCost: comparison.optimal_total_cost,
             leaderCost: comparison.optimal_leader_cost,
             distanceCost: comparison.optimal_travel_cost,
@@ -571,10 +615,12 @@ function renderSolveResponse(payload) {
     elements.downloadCurrentMatrix.disabled = false;
     elements.downloadOptimizedMatrix.disabled = false;
 
+    const providedHubs = Array.isArray(payload.comparison?.provided_hubs) ? payload.comparison.provided_hubs : [];
+    const optimalHubs = Array.isArray(payload.comparison?.optimal_hubs) ? payload.comparison.optimal_hubs : [];
     elements.solverLog.classList.remove("empty-state");
     elements.solverLog.textContent = payload.solver_log || "No iteration log available for this run.";
     elements.solveMeta.textContent =
-        `Status: ${payload.status.name} | Provided hubs: ${payload.comparison.provided_hubs.join(", ") || "-"} | Optimal hubs: ${payload.comparison.optimal_hubs.join(", ")} | Runtime: ${formatNumber(payload.metrics.runtime_seconds, 4)} s`;
+        `Status: ${payload.status.name} | Provided hubs: ${providedHubs.length > 0 ? providedHubs.join(", ") : "-"} | Optimal hubs: ${optimalHubs.length > 0 ? optimalHubs.join(", ") : "Unknown"} | Runtime: ${formatNumber(payload.metrics.runtime_seconds, 4)} s`;
     renderArtifacts(payload.artifacts);
 }
 
