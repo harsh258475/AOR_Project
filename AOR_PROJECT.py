@@ -9,10 +9,10 @@ from hospital_network.optimizer import (
 )
 
 
-P = 7
-X = 1500
+P = 2
+X = 5000
 DUAL_UB_FACTOR = 2.0
-TIME_LIMIT = 60
+TIME_LIMIT = 30
 SHOW_SOLVER_LOG = True
 EXPORT_MODEL_FILE = True
 DISPLAY_INTERVAL = 1

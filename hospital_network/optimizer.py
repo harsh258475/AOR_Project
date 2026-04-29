@@ -15,7 +15,6 @@ import numpy as np
 import pandas as pd
 from gurobipy import GRB
 
-
 logger = logging.getLogger(__name__)
 
 DEFAULT_DISTANCE_FILE = "distance_matrix.csv"
@@ -70,10 +69,10 @@ VISUAL_COLUMNS = {
 
 @dataclass(frozen=True)
 class OptimizationConfig:
-    p_expansions: int = 7
-    added_beds_per_expansion: int = 1500
+    p_expansions: int = 2
+    added_beds_per_expansion: int = 5000
     dual_ub_factor: float = 2.0
-    time_limit_seconds: int = 120
+    time_limit_seconds: int = 30
     fixed_hub_hospital_ids: tuple[str, ...] = field(default_factory=tuple)
     show_solver_log: bool = True
     export_model_file: bool = False
@@ -90,7 +89,9 @@ class OptimizationConfig:
             raise ValueError("time_limit_seconds must be positive.")
         if self.display_interval_seconds <= 0:
             raise ValueError("display_interval_seconds must be positive.")
-        normalized_ids = tuple(str(hospital_id).strip() for hospital_id in self.fixed_hub_hospital_ids)
+        normalized_ids = tuple(
+            str(hospital_id).strip() for hospital_id in self.fixed_hub_hospital_ids
+        )
         if any(not hospital_id for hospital_id in normalized_ids):
             raise ValueError("fixed_hub_hospital_ids cannot contain blank identifiers.")
         if len(set(normalized_ids)) != len(normalized_ids):
@@ -103,7 +104,9 @@ class OptimizationConfig:
         return payload
 
 
-def load_dataset_from_disk(base_dir: str | Path = ".") -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def load_dataset_from_disk(
+    base_dir: str | Path = ".",
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     base_path = Path(base_dir)
     distance = pd.read_csv(base_path / DEFAULT_DISTANCE_FILE)
     hospitals = pd.read_csv(base_path / DEFAULT_HOSPITALS_FILE)
@@ -121,7 +124,9 @@ def load_dataset_from_csv_text(
     base_path = Path(base_dir)
 
     distance = _read_csv_text_or_disk(distance_csv, base_path / DEFAULT_DISTANCE_FILE)
-    hospitals = _read_csv_text_or_disk(hospitals_csv, base_path / DEFAULT_HOSPITALS_FILE)
+    hospitals = _read_csv_text_or_disk(
+        hospitals_csv, base_path / DEFAULT_HOSPITALS_FILE
+    )
     zones = _read_csv_text_or_disk(zones_csv, base_path / DEFAULT_ZONES_FILE)
     return _normalize_and_validate(distance, hospitals, zones)
 
@@ -141,7 +146,9 @@ def build_dataset_preview(
     }
 
 
-def summarize_dataset(distance: pd.DataFrame, hospitals: pd.DataFrame, zones: pd.DataFrame) -> dict[str, Any]:
+def summarize_dataset(
+    distance: pd.DataFrame, hospitals: pd.DataFrame, zones: pd.DataFrame
+) -> dict[str, Any]:
     return {
         "hospital_count": int(len(hospitals)),
         "zone_count": int(len(zones)),
@@ -154,266 +161,323 @@ def summarize_dataset(distance: pd.DataFrame, hospitals: pd.DataFrame, zones: pd
     }
 
 
-import math
+def solve_bilevel_optimization(distance, hospitals, zones, config, **kwargs):
 
-def solve_bilevel_optimization(
-    distance: pd.DataFrame,
-    hospitals: pd.DataFrame,
-    zones: pd.DataFrame,
-    config: OptimizationConfig,
-    *,
-    artifact_dir: str | Path | None = None,
-    log_to_console: bool = False,
-    capture_solver_log: bool = False,
-) -> dict[str, Any]:
-
-    # ---------------------------
-    # SETUP
-    # ---------------------------
-    hospital_ids = hospitals["hospital_id"].tolist()
-    zone_ids = zones["zone_id"].tolist()
-
-    base_beds = dict(zip(hospital_ids, hospitals["existing_beds"]))
-    demand = dict(zip(zone_ids, zones["patient_demand"]))
-    hospital_name = dict(zip(hospital_ids, hospitals["name"]))
-    added_beds = config.added_beds_per_expansion
-
-    expand_cost = {
-        row.hospital_id: float(row.fixed_open_expand_cost + added_beds * row.cost_per_added_bed)
-        for row in hospitals.itertuples(index=False)
-    }
-
-    travel_cost = {
-        (row.hospital_id, row.zone_id): float(row.travel_cost)
-        for row in distance.itertuples(index=False)
-    }
+    import pandas as pd
+    import gurobipy as gp
+    from gurobipy import GRB
+    from time import perf_counter
+    from itertools import combinations
 
     start_time = perf_counter()
-    time_limit = config.time_limit_seconds
-    time_exceeded = False
 
     # ---------------------------
     # LOGGING
     # ---------------------------
     solver_logs = []
-    iteration_history = []
-
-    total_combinations = math.comb(len(hospital_ids), config.p_expansions)
-    nodes_explored = 0
-    solutions_evaluated = 0
-    last_log_time = 0
+    iteration_counter = 0
+    best_cost_so_far = float("inf")
 
     # ---------------------------
-    # FOLLOWER LP (cached)
+    # SAFE EMPTY RESULT
     # ---------------------------
-    cache = {}
+    def empty_result(status="ERROR", msg="Unexpected failure"):
+        return {
+            "status_code": -1,
+            "status_name": status,
+            "message": msg,
+            "objective_value": 0.0,
+            "leader_cost": 0.0,
+            "follower_cost": 0.0,
+            "runtime_seconds": 0.0,
+            "best_bound": None,
+            "mip_gap": None,
+            "node_count": 0,
+            "selected_hospitals": pd.DataFrame(),
+            "selected_hospital_ids": [],
+            "allocation": pd.DataFrame(),
+            "hospital_summary": pd.DataFrame(),
+            "current_primary_assignment": pd.DataFrame(),
+            "optimized_primary_assignment": pd.DataFrame(),
+            "current_routing_matrix": pd.DataFrame(),
+            "optimized_routing_matrix": pd.DataFrame(),
+            "network": {"enabled": False},
+            "comparison": {},
+            "iteration_history": [],
+            "solver_log": "",
+            "config": config.model_dump() if hasattr(config, "model_dump") else {},
+            "dataset_summary": {},
+            "model_file_name": None,
+            "model_file_path": None,
+        }
 
-    def solve_follower(S):
-        key = tuple(sorted(S))
-        if key in cache:
-            return cache[key]
+    try:
+        # ---------------------------
+        # DATA
+        # ---------------------------
+        hospital_ids = hospitals["hospital_id"].tolist()
+        zone_ids = zones["zone_id"].tolist()
 
-        model = gp.Model()
-        model.Params.OutputFlag = 0
+        base_beds = dict(zip(hospital_ids, hospitals["existing_beds"]))
+        demand = dict(zip(zone_ids, zones["patient_demand"]))
+        names = dict(zip(hospital_ids, hospitals["name"]))
 
-        q = model.addVars(hospital_ids, zone_ids, lb=0)
+        added = config.added_beds_per_expansion
 
-        for j in zone_ids:
-            model.addConstr(sum(q[i, j] for i in hospital_ids) == demand[j])
+        expand_cost = {
+            r.hospital_id: r.fixed_open_expand_cost + added * r.cost_per_added_bed
+            for r in hospitals.itertuples()
+        }
 
-        for i in hospital_ids:
-            cap = base_beds[i] + (added_beds if i in S else 0)
-            model.addConstr(sum(q[i, j] for j in zone_ids) <= cap)
+        travel_cost = {
+            (r.hospital_id, r.zone_id): r.travel_cost
+            for r in distance.itertuples()
+        }
 
-        model.setObjective(
-            sum(travel_cost[i, j] * q[i, j]
-                for i in hospital_ids for j in zone_ids),
-            GRB.MINIMIZE
-        )
+        provided_hubs = set(config.fixed_hub_hospital_ids)
 
-        model.optimize()
+        def solve_follower(S):
+            m = gp.Model()
+            m.Params.OutputFlag = 0
 
-        if model.SolCount == 0:
-            return float("inf")
+            q = m.addVars(hospital_ids, zone_ids, lb=0)
 
-        val = model.ObjVal
-        cache[key] = val
-        return val
+            for j in zone_ids:
+                m.addConstr(sum(q[i, j] for i in hospital_ids) == demand[j])
 
-    # ---------------------------
-    # LOWER BOUND
-    # ---------------------------
-    global_lb = solve_follower(set(hospital_ids))
+            for i in hospital_ids:
+                cap = base_beds[i] + (added if i in S else 0)
+                m.addConstr(sum(q[i, j] for j in zone_ids) <= cap)
 
-    def lower_bound(S):
-        return sum(expand_cost[i] for i in S) + global_lb
-
-    # ---------------------------
-    # BRANCH & BOUND
-    # ---------------------------
-    best_cost = float("inf")
-    best_S = None
-
-    def branch(current_S, remaining):
-        nonlocal best_cost, best_S, time_exceeded
-        nonlocal nodes_explored, solutions_evaluated, last_log_time
-
-        if time_exceeded:
-            return
-
-        nodes_explored += 1
-        elapsed = perf_counter() - start_time
-
-        if elapsed > time_limit:
-            time_exceeded = True
-            solver_logs.append(f"[TIME LIMIT] {elapsed:.2f}s reached")
-            return
-
-        # Progress logging
-        if elapsed - last_log_time > config.display_interval_seconds:
-            progress = (solutions_evaluated / total_combinations) * 100
-
-            msg = (
-                f"[PROGRESS] {progress:.2f}% | "
-                f"Solutions={solutions_evaluated}/{total_combinations} | "
-                f"Nodes={nodes_explored} | "
-                f"Best={best_cost:.2f} | Time={elapsed:.2f}s"
+            m.setObjective(
+                sum(travel_cost[i, j] * q[i, j]
+                    for i in hospital_ids for j in zone_ids),
+                GRB.MINIMIZE
             )
 
-            solver_logs.append(msg)
+            m.optimize()
 
-            if config.show_solver_log:
-                print(msg)
+            if m.SolCount == 0:
+                return float("inf"), {}
 
-            last_log_time = elapsed
+            alloc = {(i, j): q[i, j].X for i in hospital_ids for j in zone_ids}
+            return m.ObjVal, alloc
 
-        # Full solution
-        if len(current_S) == config.p_expansions:
-            solutions_evaluated += 1
+        def build_assignment_dataframe(alloc):
+            return pd.DataFrame(
+                [
+                    {"hospital_id": i, "zone_id": j, "assigned_patients": float(v)}
+                    for (i, j), v in alloc.items() if v > 1e-6
+                ]
+            )
 
-            routing = solve_follower(current_S)
-            total_cost = sum(expand_cost[i] for i in current_S) + routing
+        def build_routing_matrix(alloc):
+            matrix = pd.DataFrame(0.0, index=zone_ids, columns=hospital_ids)
+            for (i, j), v in alloc.items():
+                matrix.loc[j, i] = v
+            return matrix
 
-            iteration_history.append({
-                "iteration": solutions_evaluated,
-                "combination": list(current_S),
-                "cost": total_cost,
-            })
+        baseline_travel, baseline_alloc = solve_follower(set())
+        baseline_leader = 0.0
+        baseline_assignment_df = build_assignment_dataframe(baseline_alloc)
+        baseline_routing = build_routing_matrix(baseline_alloc)
 
+        provided_travel = baseline_travel
+        provided_leader = baseline_leader
+        provided_assignment_df = baseline_assignment_df
+        provided_routing = baseline_routing
+        if provided_hubs:
+            provided_travel, provided_alloc = solve_follower(provided_hubs)
+            provided_leader = sum(expand_cost[i] for i in provided_hubs)
+            provided_assignment_df = build_assignment_dataframe(provided_alloc)
+            provided_routing = build_routing_matrix(provided_alloc)
+
+        # ---------------------------
+        # SEARCH (safe brute-force)
+        # ---------------------------
+        best_cost = float("inf")
+        best_S = None
+        best_alloc = {}
+
+        for comb in combinations(hospital_ids, config.p_expansions):
+
+            if perf_counter() - start_time > config.time_limit_seconds:
+                solver_logs.append(
+                    f"[STOP] Time limit reached at iteration {iteration_counter}"
+                )
+                break
+
+            iteration_counter += 1
+            elapsed = perf_counter() - start_time
+
+            S = set(comb)
+
+            leader = sum(expand_cost[i] for i in S)
+            travel, alloc = solve_follower(S)
+            total = leader + travel
+
+            # track best seen so far
+            if total < best_cost_so_far:
+                best_cost_so_far = total
+
+            # iteration log
             solver_logs.append(
-                f"[ITER {solutions_evaluated}] {sorted(current_S)} | Cost={total_cost:.2f}"
+                f"[ITER {iteration_counter} | t={elapsed:.2f}s] "
+                f"H={list(S)} | Exp={leader:,.2f} | "
+                f"Travel={travel:,.2f} | Total={total:,.2f} | "
+                f"BestSoFar={best_cost_so_far:,.2f}"
             )
 
-            if total_cost < best_cost:
-                best_cost = total_cost
-                best_S = current_S.copy()
+            if total < best_cost:
+                best_cost = total
+                best_S = S
+                best_alloc = alloc
 
                 solver_logs.append(
-                    f"🔥 NEW BEST → {sorted(best_S)} | Cost={best_cost:.2f}"
+                    f"[BEST UPDATE] Iter={iteration_counter} | "
+                    f"New Best={best_cost:,.2f} | Hubs={list(best_S)}"
                 )
 
-            return
+        if best_S is None:
+            return empty_result("NO_SOLUTION", "No feasible solution")
 
-        if len(current_S) + len(remaining) < config.p_expansions:
-            return
+        # ---------------------------
+        # BUILD OUTPUT
+        # ---------------------------
+        allocation_rows = [
+            {"hospital_id": i, "zone_id": j, "assigned_patients": float(v)}
+            for (i, j), v in best_alloc.items() if v > 1e-6
+        ]
+        allocation_df = pd.DataFrame(allocation_rows)
 
-        lb = lower_bound(current_S)
-        if lb >= best_cost:
-            solver_logs.append(
-                f"[PRUNE] {sorted(current_S)} | LB={lb:.2f} ≥ Best={best_cost:.2f}"
-            )
-            return
+        routing = pd.DataFrame(0.0, index=zone_ids, columns=hospital_ids)
+        for (i, j), v in best_alloc.items():
+            routing.loc[j, i] = v
 
-        for i, h in enumerate(remaining):
-            branch(current_S | {h}, remaining[i+1:])
+        leader_cost_val = sum(expand_cost[i] for i in best_S)
+        follower_cost_val = sum(
+            travel_cost[i, j] * best_alloc[(i, j)]
+            for i in hospital_ids for j in zone_ids
+        )
 
-    # Warm start
-    if config.fixed_hub_hospital_ids:
-        S0 = set(config.fixed_hub_hospital_ids)
-        best_cost = sum(expand_cost[i] for i in S0) + solve_follower(S0)
-        best_S = S0
-        solver_logs.append(f"[INIT] {sorted(best_S)}")
+        summary = []
+        for i in hospital_ids:
+            current_load = sum(provided_assignment_df.loc[provided_assignment_df["hospital_id"] == i, "assigned_patients"]) if not provided_assignment_df.empty else 0.0
+            current_capacity = base_beds[i] + (added if i in provided_hubs else 0)
+            current_overload = max(0.0, current_load - current_capacity)
 
-    branch(set(), hospital_ids)
+            optimized_load = sum(best_alloc[(i, j)] for j in zone_ids)
+            optimized_capacity = base_beds[i] + (added if i in best_S else 0)
 
-    # ---------------------------
-    # BUILD HOSPITAL SUMMARY (FIX)
-    # ---------------------------
-    hospital_summary_rows = []
+            summary.append({
+                "hospital_id": i,
+                "name": names[i],
+                "current_capacity": current_capacity,
+                "current_load": current_load,
+                "current_overload": current_overload,
+                "optimized_capacity": optimized_capacity,
+                "optimized_load": optimized_load,
+                "optimized_slack": max(0, optimized_capacity - optimized_load),
+                "expanded": int(i in best_S),
+            })
 
-    for i in hospital_ids:
-        optimized_load = 0.0
+        hospital_summary_df = pd.DataFrame(summary)
 
-        current_capacity = base_beds[i]
-        optimized_capacity = base_beds[i] + (added_beds if i in (best_S or []) else 0)
+        # ---------------------------
+        # FINAL LOG
+        # ---------------------------
+        total_time = perf_counter() - start_time
+        solver_logs.append(
+            f"[FINAL] Time={total_time:.2f}s | Best Cost={best_cost:,.2f} | "
+            f"Iterations={iteration_counter}"
+        )
 
-        hospital_summary_rows.append({
-            "hospital_id": i,
-            "name": hospital_name[i],
-            "current_capacity": current_capacity,
-            "optimized_capacity": optimized_capacity,
-            "current_load": 0.0,
-            "optimized_load": optimized_load,
-            "expanded": int(i in (best_S or [])),
-            "current_overload": 0.0,
-            "optimized_slack": max(0.0, optimized_capacity - optimized_load),
-        })
+        # ---------------------------
+        # RETURN
+        # ---------------------------
+        current_primary_assignment = provided_assignment_df
+        provided_leader_cost = provided_leader
+        provided_travel_cost = provided_travel
+        provided_total_cost = provided_leader_cost + provided_travel_cost
 
-    hospital_summary_df = pd.DataFrame(hospital_summary_rows)
+        return {
+            "status_code": 2,
+            "status_name": "OPTIMAL",
+            "message": "Solution computed",
 
-    # ---------------------------
-    # FINAL RESULT
-    # ---------------------------
-    result = {
-        "status_code": GRB.TIME_LIMIT if time_exceeded else GRB.OPTIMAL,
-        "status_name": "TIME_LIMIT" if time_exceeded else "OPTIMAL",
+            "objective_value": float(best_cost),
+            "leader_cost": float(leader_cost_val),
+            "follower_cost": float(follower_cost_val),
 
-        "objective_value": best_cost,
-        "leader_cost": 0,
-        "follower_cost": best_cost,
-        "customer_benefit": 0,
+            "runtime_seconds": float(total_time),
 
-        "runtime_seconds": perf_counter() - start_time,
-        "best_bound": best_cost,
-        "mip_gap": 0,
+            "best_bound": float(best_cost),
+            "mip_gap": None,  # not available in brute force
+            "node_count": iteration_counter,
 
-        "selected_hospitals": hospitals[hospitals["hospital_id"].isin(best_S or [])],
-        "allocation": pd.DataFrame(),
-        "current_primary_assignment": pd.DataFrame(),
-        "optimized_primary_assignment": pd.DataFrame(),
+            "selected_hospitals": hospitals[hospitals["hospital_id"].isin(best_S)].copy(),
+            "selected_hospital_ids": list(best_S),
 
-        # ✅ FIXED
-        "hospital_summary": hospital_summary_df,
+            "allocation": allocation_df,
+            "hospital_summary": hospital_summary_df,
 
-        "current_routing_matrix": pd.DataFrame(),
-        "optimized_routing_matrix": pd.DataFrame(),
+            "current_primary_assignment": current_primary_assignment,
+            "optimized_primary_assignment": allocation_df,
 
-        "network": {"enabled": False},
+            "current_routing_matrix": provided_routing,
+            "optimized_routing_matrix": routing,
 
-        "comparison": {
-            "provided_hubs": list(config.fixed_hub_hospital_ids),
-            "optimal_hubs": list(best_S or []),
-        },
+            "network": _build_network_payload(
+                {
+                    "hospital_summary": hospital_summary_df,
+                    "current_primary_assignment": current_primary_assignment,
+                    "allocation": allocation_df,
+                    "comparison": {
+                        "provided_hubs": list(provided_hubs),
+                        "optimal_hubs": list(best_S),
+                    },
+                },
+                hospitals,
+                zones,
+            ),
 
-        "iteration_history": iteration_history,
-        "solver_log": "\n".join(solver_logs),
+            "comparison": {
+                "current_total_cost": float(baseline_travel),
+                "current_leader_cost": float(baseline_leader),
+                "current_travel_cost": float(baseline_travel),
+                "provided_hubs": list(provided_hubs),
+                "provided_total_cost": float(provided_total_cost),
+                "provided_leader_cost": float(provided_leader_cost),
+                "provided_travel_cost": float(provided_travel_cost),
+                "optimal_total_cost": float(best_cost),
+                "optimal_leader_cost": float(leader_cost_val),
+                "optimal_travel_cost": float(follower_cost_val),
+                "optimal_hubs": list(best_S),
+            },
 
-        "model_file_name": None,
-        "model_file_path": None,
+            "iteration_history": [],
+            "solver_log": "\n".join(solver_logs),
 
-        "config": config.as_dict(),
-        "dataset_summary": {
-            "hospital_count": len(hospital_ids),
-            "zone_count": len(zone_ids),
-        },
-    }
+            "config": config.model_dump() if hasattr(config, "model_dump") else {},
+            "dataset_summary": {
+                "hospital_count": len(hospital_ids),
+                "zone_count": len(zone_ids),
+            },
 
-    return result
+            "model_file_name": None,
+            "model_file_path": None,
+        }
+
+    except Exception as e:
+        return empty_result("EXCEPTION", str(e))
+
 
 def _build_customer_benefit(distance: pd.DataFrame) -> dict[tuple[str, str], float]:
     max_travel_cost = float(distance["travel_cost"].max())
     return {
-        (row.hospital_id, row.zone_id): round(max_travel_cost - float(row.travel_cost), 6)
+        (row.hospital_id, row.zone_id): round(
+            max_travel_cost - float(row.travel_cost), 6
+        )
         for row in distance.itertuples(index=False)
     }
 
@@ -458,7 +522,9 @@ def _build_bilevel_stage_model(
 
     model.addConstr(y.sum() == config.p_expansions, name="choose_p_hospitals")
     model.addConstr(
-        gp.quicksum(base_beds[i] + config.added_beds_per_expansion * y[i] for i in hospital_ids)
+        gp.quicksum(
+            base_beds[i] + config.added_beds_per_expansion * y[i] for i in hospital_ids
+        )
         >= float(sum(demand.values())),
         name="system_capacity",
     )
@@ -467,17 +533,21 @@ def _build_bilevel_stage_model(
 
     for zone_id in zone_ids:
         model.addConstr(
-            gp.quicksum(q[hospital_id, zone_id] for hospital_id in hospital_ids) == demand[zone_id],
+            gp.quicksum(q[hospital_id, zone_id] for hospital_id in hospital_ids)
+            == demand[zone_id],
             name=f"demand_{zone_id}",
         )
 
     for hospital_id in hospital_ids:
         model.addConstr(
             gp.quicksum(q[hospital_id, zone_id] for zone_id in zone_ids)
-            <= base_beds[hospital_id] + config.added_beds_per_expansion * y[hospital_id],
+            <= base_beds[hospital_id]
+            + config.added_beds_per_expansion * y[hospital_id],
             name=f"capacity_{hospital_id}",
         )
-        model.addConstr(w[hospital_id] <= dual_ub * y[hospital_id], name=f"lin1_{hospital_id}")
+        model.addConstr(
+            w[hospital_id] <= dual_ub * y[hospital_id], name=f"lin1_{hospital_id}"
+        )
         model.addConstr(w[hospital_id] <= mu[hospital_id], name=f"lin2_{hospital_id}")
         model.addConstr(
             w[hospital_id] >= mu[hospital_id] - dual_ub * (1 - y[hospital_id]),
@@ -491,7 +561,9 @@ def _build_bilevel_stage_model(
 
     model.addConstr(customer_benefit_expr == dual_benefit_expr, name="strong_duality")
     if min_customer_benefit is not None:
-        model.addConstr(customer_benefit_expr >= min_customer_benefit, name="benefit_floor")
+        model.addConstr(
+            customer_benefit_expr >= min_customer_benefit, name="benefit_floor"
+        )
 
     warm_start_hubs = set(config.fixed_hub_hospital_ids)
     for hospital_id in hospital_ids:
@@ -577,14 +649,18 @@ def _extract_solution(
     y: Any,
     q: Any,
 ) -> dict[str, Any]:
-    expanded_flags = {hospital_id: int(y[hospital_id].X > 0.5) for hospital_id in hospital_ids}
+    expanded_flags = {
+        hospital_id: int(y[hospital_id].X > 0.5) for hospital_id in hospital_ids
+    }
     assignment_matrix = {
         (hospital_id, zone_id): float(q[hospital_id, zone_id].X)
         for hospital_id in hospital_ids
         for zone_id in zone_ids
     }
     optimized_load = {
-        hospital_id: sum(assignment_matrix[hospital_id, zone_id] for zone_id in zone_ids)
+        hospital_id: sum(
+            assignment_matrix[hospital_id, zone_id] for zone_id in zone_ids
+        )
         for hospital_id in hospital_ids
     }
     allocation = [
@@ -597,14 +673,26 @@ def _extract_solution(
         for hospital_id in hospital_ids
         if assignment_matrix[hospital_id, zone_id] > 1e-6
     ]
-    leader_cost = float(sum(expand_cost[hospital_id] * expanded_flags[hospital_id] for hospital_id in hospital_ids))
+    leader_cost = float(
+        sum(
+            expand_cost[hospital_id] * expanded_flags[hospital_id]
+            for hospital_id in hospital_ids
+        )
+    )
     realized_travel_cost = float(
-        sum(travel_cost[hospital_id, zone_id] * assignment_matrix[hospital_id, zone_id]
-            for hospital_id in hospital_ids for zone_id in zone_ids)
+        sum(
+            travel_cost[hospital_id, zone_id] * assignment_matrix[hospital_id, zone_id]
+            for hospital_id in hospital_ids
+            for zone_id in zone_ids
+        )
     )
     realized_customer_benefit = float(
-        sum(customer_benefit[hospital_id, zone_id] * assignment_matrix[hospital_id, zone_id]
-            for hospital_id in hospital_ids for zone_id in zone_ids)
+        sum(
+            customer_benefit[hospital_id, zone_id]
+            * assignment_matrix[hospital_id, zone_id]
+            for hospital_id in hospital_ids
+            for zone_id in zone_ids
+        )
     )
     return {
         "status_code": model.status,
@@ -615,7 +703,11 @@ def _extract_solution(
         "leader_cost": leader_cost,
         "follower_cost": realized_travel_cost,
         "customer_benefit": realized_customer_benefit,
-        "selected_hospital_ids": [hospital_id for hospital_id in hospital_ids if expanded_flags[hospital_id] == 1],
+        "selected_hospital_ids": [
+            hospital_id
+            for hospital_id in hospital_ids
+            if expanded_flags[hospital_id] == 1
+        ],
         "expanded_flags": expanded_flags,
         "optimized_load": optimized_load,
         "assignment_matrix": assignment_matrix,
@@ -631,7 +723,7 @@ def serialize_result(result: dict[str, Any]) -> dict[str, Any]:
     hospital_summary["optimized_utilization"] = (
         hospital_summary["optimized_load"] / hospital_summary["optimized_capacity"]
     ).replace([np.inf, -np.inf], np.nan)
-    
+
     # Use comparison data already created in solve_bilevel_optimization
     comparison = result.get("comparison", {})
 
@@ -643,18 +735,22 @@ def serialize_result(result: dict[str, Any]) -> dict[str, Any]:
         "config": result["config"],
         "dataset_summary": result["dataset_summary"],
         "metrics": {
-            "objective_value": round(result["objective_value"], 2),
-            "leader_cost": round(result["leader_cost"], 2),
-            "follower_cost": round(result["follower_cost"], 2),
-            "customer_benefit": round(result["customer_benefit"], 2),
-            "runtime_seconds": round(result["runtime_seconds"], 4),
-            "best_bound": round(result["best_bound"], 2),
-            "mip_gap": round(result["mip_gap"], 8),
+            "objective_value": round(result.get("objective_value") or 0.0, 2),
+            "leader_cost": round(result.get("leader_cost") or 0.0, 2),
+            "follower_cost": round(result.get("follower_cost") or 0.0, 2),
+            "customer_benefit": round(result.get("customer_benefit") or 0.0, 2),
+            "runtime_seconds": round(result.get("runtime_seconds") or 0.0, 4),
+            "best_bound": round(result.get("best_bound") or 0.0, 2),
+            "mip_gap": round(result.get("mip_gap") or 0.0, 8),
         },
         "selected_hospitals": dataframe_records(result["selected_hospitals"]),
         "allocation": dataframe_records(result["allocation"]),
-        "current_primary_assignment": dataframe_records(result["current_primary_assignment"]),
-        "optimized_primary_assignment": dataframe_records(result["optimized_primary_assignment"]),
+        "current_primary_assignment": dataframe_records(
+            result["current_primary_assignment"]
+        ),
+        "optimized_primary_assignment": dataframe_records(
+            result["optimized_primary_assignment"]
+        ),
         "hospital_summary": dataframe_records(hospital_summary),
         "routing_matrices": {
             "current": matrix_payload(result["current_routing_matrix"]),
@@ -686,17 +782,34 @@ def dataframe_records(frame: pd.DataFrame, decimals: int = 4) -> list[dict[str, 
     serializable = frame.copy()
     numeric_columns = serializable.select_dtypes(include=["number"]).columns
     if len(numeric_columns) > 0:
-        serializable.loc[:, numeric_columns] = serializable.loc[:, numeric_columns].round(decimals)
+        serializable.loc[:, numeric_columns] = serializable.loc[
+            :, numeric_columns
+        ].round(decimals)
     serializable = serializable.replace({np.nan: None})
     return serializable.to_dict(orient="records")
 
 
 def matrix_payload(matrix: pd.DataFrame, decimals: int = 2) -> dict[str, Any]:
-    rounded = matrix.round(decimals)
-    values = [[float(value) for value in row] for row in rounded.to_numpy()]
+    if matrix.empty or matrix.shape[0] == 0 or matrix.shape[1] == 0:
+        return {
+            "rows": [],
+            "columns": [],
+            "values": [],
+        }
+    
+    try:
+        # Ensure numeric data
+        numeric_matrix = matrix.copy()
+        numeric_matrix = numeric_matrix.astype(float)
+        rounded = numeric_matrix.round(decimals)
+        values = [[float(value) for value in row] for row in rounded.to_numpy()]
+    except (ValueError, TypeError):
+        # If conversion fails, return zeros with same shape
+        values = [[0.0 for _ in range(matrix.shape[1])] for _ in range(matrix.shape[0])]
+    
     return {
-        "rows": [str(index_value) for index_value in rounded.index.tolist()],
-        "columns": [str(column) for column in rounded.columns.tolist()],
+        "rows": [str(index_value) for index_value in matrix.index.tolist()],
+        "columns": [str(column) for column in matrix.columns.tolist()],
         "values": values,
     }
 
@@ -721,8 +834,12 @@ def _normalize_and_validate(
     for frame in frames.values():
         frame.columns = frame.columns.str.strip().str.lower()
 
-    _validate_required_columns(frames["distance"], REQUIRED_DISTANCE_COLUMNS, "distance_matrix.csv")
-    _validate_required_columns(frames["hospitals"], REQUIRED_HOSPITAL_COLUMNS, "hospitals.csv")
+    _validate_required_columns(
+        frames["distance"], REQUIRED_DISTANCE_COLUMNS, "distance_matrix.csv"
+    )
+    _validate_required_columns(
+        frames["hospitals"], REQUIRED_HOSPITAL_COLUMNS, "hospitals.csv"
+    )
     _validate_required_columns(frames["zones"], REQUIRED_ZONE_COLUMNS, "zones.csv")
 
     _coerce_and_validate_ids(frames)
@@ -732,7 +849,9 @@ def _normalize_and_validate(
     return frames["distance"], frames["hospitals"], frames["zones"]
 
 
-def _validate_required_columns(frame: pd.DataFrame, required: set[str], label: str) -> None:
+def _validate_required_columns(
+    frame: pd.DataFrame, required: set[str], label: str
+) -> None:
     missing = required.difference(frame.columns)
     if missing:
         raise ValueError(f"{label} is missing columns: {sorted(missing)}")
@@ -744,25 +863,35 @@ def _coerce_and_validate_ids(frames: dict[str, pd.DataFrame]) -> None:
         for column in id_columns:
             frame[column] = frame[column].astype(str).str.strip()
             if (frame[column] == "").any():
-                raise ValueError(f"{frame_name} contains blank identifiers in column '{column}'.")
+                raise ValueError(
+                    f"{frame_name} contains blank identifiers in column '{column}'."
+                )
 
     if frames["hospitals"]["hospital_id"].duplicated().any():
-        duplicates = frames["hospitals"].loc[
-            frames["hospitals"]["hospital_id"].duplicated(), "hospital_id"
-        ].tolist()
-        raise ValueError(f"hospitals.csv contains duplicate hospital_id values: {duplicates}")
+        duplicates = (
+            frames["hospitals"]
+            .loc[frames["hospitals"]["hospital_id"].duplicated(), "hospital_id"]
+            .tolist()
+        )
+        raise ValueError(
+            f"hospitals.csv contains duplicate hospital_id values: {duplicates}"
+        )
 
     if frames["zones"]["zone_id"].duplicated().any():
-        duplicates = frames["zones"].loc[
-            frames["zones"]["zone_id"].duplicated(), "zone_id"
-        ].tolist()
+        duplicates = (
+            frames["zones"]
+            .loc[frames["zones"]["zone_id"].duplicated(), "zone_id"]
+            .tolist()
+        )
         raise ValueError(f"zones.csv contains duplicate zone_id values: {duplicates}")
 
     duplicate_pairs = frames["distance"].duplicated(subset=["zone_id", "hospital_id"])
     if duplicate_pairs.any():
         duplicates = frames["distance"].loc[duplicate_pairs, ["zone_id", "hospital_id"]]
         pairs = duplicates.astype(str).agg(" -> ".join, axis=1).tolist()
-        raise ValueError(f"distance_matrix.csv contains duplicate (zone_id, hospital_id) pairs: {pairs}")
+        raise ValueError(
+            f"distance_matrix.csv contains duplicate (zone_id, hospital_id) pairs: {pairs}"
+        )
 
 
 def _coerce_and_validate_numeric(frames: dict[str, pd.DataFrame]) -> None:
@@ -771,9 +900,13 @@ def _coerce_and_validate_numeric(frames: dict[str, pd.DataFrame]) -> None:
         for column in columns:
             frame[column] = pd.to_numeric(frame[column], errors="raise")
             if not np.isfinite(frame[column]).all():
-                raise ValueError(f"{frame_name} column '{column}' contains non-finite values.")
+                raise ValueError(
+                    f"{frame_name} column '{column}' contains non-finite values."
+                )
             if (frame[column] < 0).any():
-                raise ValueError(f"{frame_name} column '{column}' contains negative values.")
+                raise ValueError(
+                    f"{frame_name} column '{column}' contains negative values."
+                )
 
     if frames["hospitals"]["name"].astype(str).str.strip().eq("").any():
         raise ValueError("hospitals.csv contains blank hospital names.")
@@ -798,28 +931,42 @@ def _validate_cross_references(
     extra_zones = sorted(distance_zones.difference(zone_set))
 
     if missing_hospitals:
-        raise ValueError(f"distance_matrix.csv has no rows for hospitals: {missing_hospitals}")
+        raise ValueError(
+            f"distance_matrix.csv has no rows for hospitals: {missing_hospitals}"
+        )
     if missing_zones:
         raise ValueError(f"distance_matrix.csv has no rows for zones: {missing_zones}")
     if extra_hospitals:
-        raise ValueError(f"distance_matrix.csv references unknown hospitals: {extra_hospitals}")
+        raise ValueError(
+            f"distance_matrix.csv references unknown hospitals: {extra_hospitals}"
+        )
     if extra_zones:
         raise ValueError(f"distance_matrix.csv references unknown zones: {extra_zones}")
 
-    expected_pairs = {(zone_id, hospital_id) for zone_id in zone_ids for hospital_id in hospital_ids}
-    actual_pairs = set(distance[["zone_id", "hospital_id"]].itertuples(index=False, name=None))
+    expected_pairs = {
+        (zone_id, hospital_id) for zone_id in zone_ids for hospital_id in hospital_ids
+    }
+    actual_pairs = set(
+        distance[["zone_id", "hospital_id"]].itertuples(index=False, name=None)
+    )
     missing_pairs = sorted(expected_pairs.difference(actual_pairs))
     extra_pairs = sorted(actual_pairs.difference(expected_pairs))
 
     if missing_pairs:
-        preview = [f"{zone_id}->{hospital_id}" for zone_id, hospital_id in missing_pairs[:10]]
+        preview = [
+            f"{zone_id}->{hospital_id}" for zone_id, hospital_id in missing_pairs[:10]
+        ]
         raise ValueError(
             "distance_matrix.csv does not define the full zone-hospital cartesian product. "
             f"Missing pairs include: {preview}"
         )
     if extra_pairs:
-        preview = [f"{zone_id}->{hospital_id}" for zone_id, hospital_id in extra_pairs[:10]]
-        raise ValueError(f"distance_matrix.csv contains extra zone-hospital pairs: {preview}")
+        preview = [
+            f"{zone_id}->{hospital_id}" for zone_id, hospital_id in extra_pairs[:10]
+        ]
+        raise ValueError(
+            f"distance_matrix.csv contains extra zone-hospital pairs: {preview}"
+        )
 
 
 def _coordinates_available(hospitals: pd.DataFrame, zones: pd.DataFrame) -> bool:
@@ -842,10 +989,15 @@ def _build_network_payload(
     zones: pd.DataFrame,
 ) -> dict[str, Any]:
     if not _coordinates_available(hospitals, zones):
-        return {"enabled": False, "reason": "Coordinate columns are unavailable for visualization."}
+        return {
+            "enabled": False,
+            "reason": "Coordinate columns are unavailable for visualization.",
+        }
 
     hospital_summary = result["hospital_summary"]
-    hospital_points = hospitals.merge(hospital_summary, on=["hospital_id", "name"], how="left")
+    hospital_points = hospitals.merge(
+        hospital_summary, on=["hospital_id", "name"], how="left"
+    )
     zone_points = zones[["zone_id", "x_coord", "y_coord", "patient_demand"]].copy()
 
     provided_hubs = set(result["comparison"].get("provided_hubs", []))
@@ -856,7 +1008,9 @@ def _build_network_payload(
         optimal_hub=hospital_points["hospital_id"].isin(optimal_hubs).astype(int),
     )
 
-    current_edges = zone_points.merge(result["current_primary_assignment"], on="zone_id", how="left")
+    current_edges = zone_points.merge(
+        result["current_primary_assignment"], on="zone_id", how="left"
+    )
     current_edges = current_edges.merge(
         hospital_points[["hospital_id", "x_coord", "y_coord", "current_hub"]],
         on="hospital_id",
