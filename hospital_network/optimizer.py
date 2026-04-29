@@ -384,16 +384,31 @@ def solve_bilevel_optimization(distance, hospitals, zones, config, **kwargs):
         for i in hospital_ids:
 
             # ---------------- CURRENT ----------------
-            if not provided_assignment_df.empty:
-                current_load = provided_assignment_df.loc[
-                    provided_assignment_df["hospital_id"] == i,
+            if not baseline_assignment_df.empty:
+                current_load = baseline_assignment_df.loc[
+                    baseline_assignment_df["hospital_id"] == i,
                     "assigned_patients"
                 ].sum()
+                current_assignment_parts = [
+                    f"{row.zone_id}({int(row.assigned_patients) if float(row.assigned_patients).is_integer() else round(row.assigned_patients, 2)})"
+                    for row in baseline_assignment_df.loc[
+                        baseline_assignment_df["hospital_id"] == i
+                    ].itertuples(index=False)
+                ]
+                current_assignment = ", ".join(current_assignment_parts)
             else:
                 current_load = 0.0
+                current_assignment = ""
 
-            current_capacity = base_beds[i] + (added if i in provided_hubs else 0)
+            current_capacity = base_beds[i]
             current_overload = max(0.0, current_load - current_capacity)
+            current_slack = max(0.0, current_capacity - current_load)
+            if current_overload > 0:
+                current_status = "Overcrowded"
+            elif current_slack > 0:
+                current_status = "Undercrowded"
+            else:
+                current_status = "Balanced"
 
             # ---------------- OPTIMIZED ----------------
             optimized_load = sum(best_alloc.get((i, j), 0.0) for j in zone_ids)
@@ -407,6 +422,9 @@ def solve_bilevel_optimization(distance, hospitals, zones, config, **kwargs):
                 "current_capacity": current_capacity,
                 "current_load": current_load,
                 "current_overload": current_overload,
+                "current_slack": current_slack,
+                "current_status": current_status,
+                "current_assignment": current_assignment,
 
                 "optimized_capacity": optimized_capacity,
                 "optimized_load": optimized_load,
@@ -429,7 +447,9 @@ def solve_bilevel_optimization(distance, hospitals, zones, config, **kwargs):
         # ---------------------------
         # RETURN
         # ---------------------------
-        current_primary_assignment = provided_assignment_df
+        current_primary_assignment = baseline_assignment_df
+        current_routing_matrix = baseline_routing
+
         provided_leader_cost = provided_leader
         provided_travel_cost = provided_travel
         provided_total_cost = provided_leader_cost + provided_travel_cost
@@ -458,7 +478,7 @@ def solve_bilevel_optimization(distance, hospitals, zones, config, **kwargs):
             "current_primary_assignment": current_primary_assignment,
             "optimized_primary_assignment": allocation_df,
 
-            "current_routing_matrix": provided_routing,
+            "current_routing_matrix": current_routing_matrix,
             "optimized_routing_matrix": routing,
 
             "network": _build_network_payload(

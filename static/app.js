@@ -209,6 +209,9 @@ function renderHospitalSummary(container, records) {
                         <div>${formatNumber(row.current_utilization * 100)}%</div>
                     </td>
                     <td>${formatNumber(row.current_overload)}</td>
+                    <td>${formatNumber(row.current_slack)}</td>
+                    <td>${escapeHtml(row.current_status || "")}</td>
+                    <td>${escapeHtml(row.current_assignment || "")}</td>
                     <td>${formatNumber(row.optimized_capacity)}</td>
                     <td>${formatNumber(row.optimized_load)}</td>
                     <td>
@@ -235,6 +238,9 @@ function renderHospitalSummary(container, records) {
                     <th>Current Load</th>
                     <th>Current Utilization</th>
                     <th>Current Overload</th>
+                    <th>Current Slack</th>
+                    <th>Current Status</th>
+                    <th>Current Assignment</th>
                     <th>Optimized Capacity</th>
                     <th>Optimized Load</th>
                     <th>Optimized Utilization</th>
@@ -354,19 +360,29 @@ function renderNetwork(container, network, edgeKey) {
         .join("");
 
     const zoneSvg = zones
-        .map((zone) => `
+        .map((zone) => {
+            const radius = 0.65 + Math.min(Number(zone.patient_demand || 0) / 360, 0.75);
+            return `
             <g>
                 <circle
                     class="zone-dot"
                     cx="${projectX(zone.x_coord)}"
                     cy="${projectY(zone.y_coord)}"
-                    r="${1.05 + Math.min(Number(zone.patient_demand || 0) / 280, 1.25)}"
+                    r="${radius}"
                     fill="#111827"
-                    fill-opacity="0.96">
+                    fill-opacity="0.7">
                     <title>${escapeHtml(`${zone.zone_id}: demand ${formatNumber(zone.patient_demand)}`)}</title>
                 </circle>
+                <text
+                    x="${projectX(zone.x_coord)}"
+                    y="${projectY(zone.y_coord) - 1.2}"
+                    class="zone-label"
+                    text-anchor="middle">
+                    ${escapeHtml(String(zone.zone_id))}
+                </text>
             </g>
-        `)
+        `;
+        })
         .join("");
 
     const hubMarkersOnly = hospitalMarkers.filter((hospital) => hospital[activeHubField] === 1);
@@ -454,8 +470,8 @@ function renderNetwork(container, network, edgeKey) {
             const x = hospital.plotX;
             const y = hospital.plotY;
             const fill = hubColorMap[hospital.hospital_id] || "#d97706";
-            const outer = 3.4;
-            const inner = 1.4;
+            const outer = 2.6;
+            const inner = 1.0;
             const points = 5;
             const coordinates = Array.from({ length: points * 2 }, (_, index) => {
                 const angle = (Math.PI / points) * index - Math.PI / 2;
@@ -468,7 +484,7 @@ function renderNetwork(container, network, edgeKey) {
                         class="hub-star"
                         fill="${fill}"
                         stroke="#0f172a"
-                        stroke-width="0.22">
+                        stroke-width="0.18">
                         <title>${escapeHtml(`${hospital.hospital_id} | load ${formatNumber(hospital[activeLoadField])} / ${formatNumber(hospital[activeCapacityField])} | hub`)}</title>
                     </polygon>
                 </g>
